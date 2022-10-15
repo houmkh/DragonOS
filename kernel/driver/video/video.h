@@ -27,6 +27,21 @@ int video_init();
  */
 int video_set_refresh_target(struct scm_buffer_info_t *buf);
 
+/**
+ * @brief 获取vbe的信息
+ * 
+*/
+void get_vbe_info();
+
+/**
+ * @brief 设置textmode
+*/
+void set_textmode();
+
+/**
+ * @brief 设置pixel模式
+*/
+void set_pixelmode();
 extern uint64_t video_refresh_expire_jiffies;
 extern uint64_t video_last_refresh_pid;
 

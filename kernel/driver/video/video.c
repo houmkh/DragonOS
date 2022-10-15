@@ -22,6 +22,81 @@ static struct scm_buffer_info_t *video_refresh_target = NULL;
 static struct process_control_block *video_daemon_pcb = NULL;
 static spinlock_t daemon_refresh_lock;
 
+struct vbe_info_block
+{
+
+    uint8_t vbe_signature[5];      // VBE识别标志
+    uint16_t vbe_version;          // VBE版本
+    uint32_t oem_string_ptr;       // OEM字符串指针
+    uint8_t capabilities;          //图形控制器的机能
+    uint32_t video_mode_ptr;       // VedioModeList指针
+    uint16_t total_memory;         // 64KB内存块数量
+    uint16_t oem_soft_ware_rev;    // VBE软件版本
+    uint32_t oem_verdor_name_ptr;  // OEM供应商名字指针
+    uint32_t oem_product_name_ptr; // OEM产品名指针
+    uint32_t oem_product_rev_otr;  // OEM产品版本指针
+    uint8_t reserved[222];         //保留
+    uint8_t oem_data[256];         // OEM数据
+};
+
+struct mode_info_block
+{
+    //所有VBE版本强制提供的信息
+    uint16_t mode_atrributes;     //模式属性
+    uint8_t win_a_attributes;     //窗口A属性
+    uint8_t win_b_attributes;     //窗口B属性
+    uint16_t win_granularity;     //窗口颗粒度
+    uint16_t win_size;            //窗口大小
+    uint16_t win_a_sigment;       //窗口A的段地址
+    uint16_t win_b_sigment;       //窗口B的段地址
+    uint32_t win_func_ptr;        //窗口功能的人口地址（实模式）
+    uint16_t bytes_per_scan_line; //每条扫描线占用字节数
+
+    // VBE 1.2以上版本强制提供的信息
+    uint16_t x_resolution;         //水平分辨率（像素或字符）
+    uint16_t y_resolution;         //垂直分辨率（像素或字符）
+    uint8_t x_char_size;           //字符宽度（像索）
+    uint8_t y_char_size;           //字符高度
+    uint8_t number_of_planes;      //内存平面数盘
+    uint8_t bits_per_pixel;        //每像素占用位宽
+    uint8_t number_of_backs;       //块数量
+    uint8_t memory_model;          //内存模式类型
+    uint8_t bank_size;             //块容量
+    uint8_t number_of_image_pages; //图像页数量
+    uint8_t reserved;              //为分页功能保留使用
+
+    //直接颜色描画区域
+    uint8_t red_mask_size;          // Direct Color的红色屏蔽位宽
+    uint8_t red_field_position;     //红色屏蔽位的起始位置
+    uint8_t green_mask_size;        // Direct Color的绿色屏蔽位宽
+    uint8_t green_field_position;   //绿色屏蔽位的起始位置
+    uint8_t blue_mask_size;         // Direct Color的蓝色屏蔽位宽
+    uint8_t blue_field_position;    //蓝色屏蔽位的起始位置
+    uint8_t rsv_mask_size;          // Direct Color的保留色屏蔽位宽
+    uint8_t rsv_field_position;     //保留色屏蔽位的起始位置
+    uint8_t direct_color_mode_info; // Direct Color模式属性
+
+    // VBE2.0以上版本强制提供的信息
+    uint32_t phys_base_ptr; //平坦帧缓存区模式的起始物理地址
+    uint32_t reserved1;     //保留，必须为0
+    uint16_t reserved2;     //保留，必须为0
+
+    // VBE3.0以上版本强制提供的信息
+    uint16_t lin_bytes_per_scan_line;  //线性模式的每条扫描线占用字节数
+    uint8_t bnk_number_of_image_pages; //块模式的图像页数量
+    uint8_t lin_number_of_image_pages; //线性模式的图像页数量
+    uint8_t lin_red_mask_size;         // Direct Color的红色屏蔽位宽（线性模式）
+    uint8_t lin_red_field_position;    //红色屏蔽位的起始位置（线性模式）
+    uint8_t lin_green_mask_size;       // Direct Color的绿色屏蔽位宽（线性模式）
+    uint8_t lin_green_field_position;  //绿色屏蔽位的起始位置（线性模式）
+    uint8_t lin_blue_mask_size;        // Direct Color的蓝色屏蔽位宽（线性模式）
+    uint8_t lin_blue_field_position;   //蓝色屏蔽位的起始位置（线性模式）
+    uint8_t lin_rsv_mask_size;         // Direct Color的保留色屏蔽位宽（线性模式）
+    uint8_t lin_rsv_field_position;    //保留色屏蔽位的起始位置（线性模式）
+    uint32_t max_pixel_clock;          //图像模式的最大像素时钟
+    uint8_t reserved3[189];            // mode_info_block剩余空间
+};
+
 #define REFRESH_INTERVAL 15UL // 启动刷新帧缓冲区任务的时间间隔
 
 /**
@@ -54,7 +129,7 @@ int video_refresh_daemon(void *unused)
 {
     // 初始化锁, 这个锁只会在daemon中使用
     spin_init(&daemon_refresh_lock);
-    
+
     for (;;)
     {
         if (clock() >= video_refresh_expire_jiffies)
@@ -188,4 +263,54 @@ int video_init()
         uart_send(COM1, init_text2[i]);
 
     return 0;
+}
+
+/**
+ * @brief 获取vbe的信息
+ *
+ */
+void get_vbe_info()
+{
+    struct vbe_info_block *ptr = {0};
+    ptr->vbe_signature[0] = 'V';
+    ptr->vbe_signature[1] = 'B';
+    ptr->vbe_signature[0] = 'E';
+    ptr->vbe_signature[0] = '2';
+
+    uint64_t phys_ptr =  virt_2_phys(ptr);
+
+    __asm__ __volatile__("movq $0x00,%%rax \n\t"
+                         "movq %%rax, %%rsi \n\t"
+                         "movq %1, %%rdi \n\t"
+                         "movq $0x4f00, %%rax \n\t"
+                         "int  $0x10 \n\t"
+                         "cmp  $004f, %%rax \n\t"
+                         "movq  %%rsi, %0 \n\t"
+                         : "=m"(ptr)
+                         : "m"(phys_ptr)
+                         : "memory", "rax", "rsi", "rdi");
+    kdebug("signature:%s\nvideo_mode_ptr:%d\n", ptr->vbe_signature, ptr->video_mode_ptr);
+    kdebug("oem_string_ptr:%d\n", ptr->oem_string_ptr);
+}
+
+/**
+ * @brief 设置textmode
+ */
+void set_textmode()
+{
+    // __asm__ __volatile__("movq $0x4F02, %%rax \n\t"
+    //                      "movq $0x410C, %%rbx \n\t"
+    //                      "int $0x10" ::
+    //                          : "rax", "rbx");
+}
+
+/**
+ * @brief 设置pixel模式
+ */
+void set_pixelmode()
+{
+    // __asm__ __volatile__("movq $0x4F02, %%rax \n\t"
+    //                      "movq $0x411B, %%rbx \n\t"
+    //                      "int $0x10" ::
+    //                          : "rax", "rbx");
 }
