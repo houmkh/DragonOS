@@ -12,7 +12,6 @@
 #include <process/process.h>
 #include <sched/sched.h>
 #include <time/timer.h>
-
 uint64_t video_refresh_expire_jiffies = 0;
 uint64_t video_last_refresh_pid = -1;
 
@@ -271,26 +270,25 @@ int video_init()
  */
 void get_vbe_info()
 {
-    struct vbe_info_block *ptr = {0};
-    ptr->vbe_signature[0] = 'V';
-    ptr->vbe_signature[1] = 'B';
-    ptr->vbe_signature[0] = 'E';
-    ptr->vbe_signature[0] = '2';
-
-    uint64_t phys_ptr =  virt_2_phys(ptr);
+    struct vbe_info_block vbe_info;
+    memcpy(vbe_info.vbe_signature, "VBE2", 5);
+    struct vbe_info_block *ptr = &vbe_info;
+    uint64_t phys_ptr = virt_2_phys(ptr);
 
     __asm__ __volatile__("movq $0x00,%%rax \n\t"
                          "movq %%rax, %%rsi \n\t"
                          "movq %1, %%rdi \n\t"
                          "movq $0x4f00, %%rax \n\t"
                          "int  $0x10 \n\t"
-                         "cmp  $004f, %%rax \n\t"
-                         "movq  %%rsi, %0 \n\t"
-                         : "=m"(ptr)
+                        //  "cmpw  $0x004f, %%ax \n\t"
+                         "movq  %%rsi, %%rax \n\t"
+                         "movq  %%rax,%0"
+                         : "=m"(phys_ptr)
                          : "m"(phys_ptr)
                          : "memory", "rax", "rsi", "rdi");
-    kdebug("signature:%s\nvideo_mode_ptr:%d\n", ptr->vbe_signature, ptr->video_mode_ptr);
-    kdebug("oem_string_ptr:%d\n", ptr->oem_string_ptr);
+    struct vbe_info_block *virt_ptr = (struct vbe_info_block *)phys_2_virt(ptr);
+    kdebug("signature:%s\nvideo_mode_ptr:%d\n", virt_ptr->vbe_signature, virt_ptr->video_mode_ptr);
+    kdebug("oem_string_ptr:%d\n", virt_ptr->oem_string_ptr);
 }
 
 /**
