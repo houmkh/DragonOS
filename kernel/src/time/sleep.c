@@ -51,7 +51,7 @@ int nanosleep(const struct timespec *rqtp, struct timespec *rmtp)
     memset(sleep_task, 0, sizeof(struct timer_func_list_t));
 
     timer_func_init_us(sleep_task, &nanosleep_handler, (void *)current_pcb, rqtp->tv_nsec / 1000);
-
+    // TODO 加锁
     timer_func_add(sleep_task);
 
     current_pcb->state = PROC_INTERRUPTIBLE;

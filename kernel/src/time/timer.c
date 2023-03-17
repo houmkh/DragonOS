@@ -105,7 +105,7 @@ void timer_func_init_us(struct timer_func_list_t *timer_func, void (*func)(void 
 void timer_func_add(struct timer_func_list_t *timer_func)
 {
     struct timer_func_list_t *tmp = container_of(list_next(&timer_func_head.list), struct timer_func_list_t, list);
-
+    // FIXME 逻辑上没有实现定时器结束时间从早到晚排序
     if (list_empty(&timer_func_head.list) == false)
         while (tmp->expire_jiffies < timer_func->expire_jiffies)
             tmp = container_of(list_next(&tmp->list), struct timer_func_list_t, list);
