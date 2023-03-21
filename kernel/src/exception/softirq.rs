@@ -37,13 +37,6 @@ impl Default for SoftirqVector {
     }
 }
 
-pub struct Softirq {
-    modify_lock: RawSpinlock,
-    pending: u64,
-    running: u64,
-    table: [SoftirqVector; MAX_SOFTIRQ_NUM as usize],
-}
-
 #[no_mangle]
 #[allow(dead_code)]
 /// @brief 提供给c的接口函数,用于初始化静态指针
@@ -122,6 +115,12 @@ pub extern "C" fn do_softirq() {
     softirq_handler.do_softirq();
 }
 
+pub struct Softirq {
+    modify_lock: RawSpinlock,
+    pending: u64,
+    running: u64,
+    table: [SoftirqVector; MAX_SOFTIRQ_NUM as usize],
+}
 impl Default for Softirq {
     fn default() -> Self {
         Self {
@@ -237,11 +236,14 @@ impl Softirq {
         sti();
         let mut softirq_index: u32 = 0; //软中断向量号码
         while (softirq_index as u64) < MAX_SOFTIRQ_NUM && self.pending != 0 {
+            // 检查是否在运行 且需要执行的函数不为空
             if self.is_pending(softirq_index)
                 && self.table[softirq_index as usize].action.is_some()
                 && !self.is_running(softirq_index)
             {
+                //尝试加锁
                 if self.modify_lock.try_lock() {
+                    // 如果在运行或者是执行函数为空
                     if self.is_running(softirq_index)
                         || self.table[softirq_index as usize].action.is_none()
                     {
