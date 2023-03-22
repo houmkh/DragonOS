@@ -1,6 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
 use alloc::{sync::Arc, vec::Vec};
+use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{
     arch::interrupt::{cli, sti},
@@ -16,12 +17,21 @@ lazy_static! {
 /// 软中断向量号码
 #[allow(dead_code)]
 #[repr(u8)]
+#[derive(FromPrimitive, Copy, Clone)]
 pub enum TrapNumber {
-    TIMER = 0,        //时钟软中断信号
+    /// 时钟软中断信号
+    TIMER = 0,
     VideoRefresh = 1, //帧缓冲区刷新软中断
 }
 
+impl From<u64> for TrapNumber {
+    fn from(value: u64) -> Self {
+        return <Self as FromPrimitive>::from_u64(value).unwrap();
+    }
+}
+
 bitflags! {
+    #[derive(Default)]
     pub struct VecStatus:u64{
         const BASE_STATUS = 1;
     }
@@ -30,26 +40,18 @@ bitflags! {
 impl VecStatus {
     /// @brief 清除指定位
     ///
-    /// @param cl_bit 需要清除的位对应的值
-    ///
-    /// @param target 被操作的数
-    pub fn clear_bit(cl_bit: u64, target: u64) -> u64 {
+    /// @param cl it 需要清除的位对应的值
+    pub fn clear_bit(&mut self, cl_bit: u64) {
         let num = VecStatus::from_bits_truncate(cl_bit);
-        let mut res = VecStatus::from_bits_truncate(target);
-        res.remove(num);
-        return res.bits();
+        self.remove(num);
     }
 
     /// @brief 清除指定位
     ///
     /// @param cl_bit 需要清除的位对应的值
-    ///
-    /// @param target 被操作的数
-    pub fn set_bit(st_bit: u64, target: u64) -> u64 {
+    pub fn set_bit(&mut self, st_bit: u64) {
         let num = VecStatus::from_bits_truncate(st_bit);
-        let mut res = VecStatus::from_bits_truncate(target);
-        res.insert(num);
-        return res.bits();
+        self.insert(num);
     }
 }
 pub trait TrapVec: Send + Sync {
@@ -57,8 +59,8 @@ pub trait TrapVec: Send + Sync {
 }
 
 pub struct Trap {
-    pending: u64,
-    running: u64,
+    pending: VecStatus,
+    running: VecStatus,
     table: [Option<Arc<dyn TrapVec>>; MAX_SOFTIRQ_NUM as usize],
 }
 impl Trap {
@@ -73,8 +75,8 @@ impl Trap {
         };
 
         return Trap {
-            pending: 0,
-            running: 0,
+            pending: VecStatus::default(),
+            running: VecStatus::default(),
             table: data,
         };
     }
@@ -86,19 +88,19 @@ impl Trap {
     /// @param hanlder 中断函数对应的结构体
     pub fn register_trap(
         &mut self,
-        trap_num: u32,
-        hanlder: Option<Arc<dyn TrapVec>>,
+        trap_num: TrapNumber,
+        handler: Arc<dyn TrapVec>,
     ) -> Result<i32, SystemError> {
         // let self = &mut TRAP_VECTORS.lock();
         // 判断该软中断向量是否已经被注册
-        if hanlder.is_none() || self.table[trap_num as usize].is_some() {
+        if self.table[trap_num as usize].is_some() {
             return Err(SystemError::EINVAL);
         }
-        self.table[trap_num as usize] = hanlder;
+        self.table[trap_num as usize] = Some(handler);
 
         // 将对应位置的running置0，pending置1
-        self.running = VecStatus::clear_bit(trap_num as u64, self.running);
-        self.pending = VecStatus::set_bit(trap_num as u64, self.pending);
+        self.running.clear_bit(trap_num as u64);
+        self.pending.set_bit(trap_num as u64);
 
         return Ok(0);
     }
@@ -106,18 +108,18 @@ impl Trap {
     /// @brief 解注册软中断向量
     ///
     /// @param irq_num 中断向量号码   
-    pub fn unregister_trap(&mut self, trap_num: u32) {
+    pub fn unregister_trap(&mut self, trap_num: TrapNumber) {
         // 将软中断向量清空
         self.table[trap_num as usize] = None;
 
         // 将对应位置的pending和runing都置0
-        self.running = VecStatus::clear_bit(trap_num as u64, self.running);
-        self.pending = VecStatus::clear_bit(trap_num as u64, self.pending);
+        self.running.clear_bit(trap_num as u64);
+        self.pending.clear_bit(trap_num as u64);
     }
 
     pub fn do_trap(&mut self) {
         sti();
-        if self.pending == 0 {
+        if self.pending.is_empty() {
             return;
         }
         for softirq_num in 0..MAX_SOFTIRQ_NUM {
@@ -125,8 +127,8 @@ impl Trap {
                 continue;
             }
             // 将running对应的位置1，pending对应的位置0,并执行函数
-            self.running = VecStatus::set_bit(softirq_num, self.running);
-            self.pending = VecStatus::clear_bit(softirq_num, self.pending);
+            self.running.set_bit(softirq_num);
+            self.pending.clear_bit(softirq_num);
             self.table[softirq_num as usize].as_ref().unwrap().run();
         }
         cli();

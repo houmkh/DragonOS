@@ -1,10 +1,14 @@
 use core::{ffi::c_void, ptr::null_mut};
 
-use alloc::{collections::LinkedList, rc::Weak, sync::Arc};
+use alloc::{
+    boxed::Box,
+    collections::LinkedList,
+    sync::{Arc, Weak},
+};
 
 use crate::{
-    arch::{asm::current::current_pcb, sched::sched},
-    exception::softirq2::TrapVec,
+    arch::{asm::current::current_pcb, sched::sched, interrupt::{cli, sti}},
+    exception::softirq2::{TrapNumber, TrapVec, TRAP_VECTORS},
     include::bindings::bindings::{process_control_block, process_wakeup, PROC_RUNNING},
     kdebug,
     libs::spinlock::{SpinLock, SpinLockGuard},
@@ -21,109 +25,64 @@ lazy_static! {
 
 /// 定时器要执行的函数的特征
 pub trait TimerFunction: Send + Sync {
-    fn run(&self);
+    fn run(&mut self);
 }
-pub struct Handler {
-    handler: Arc<LockWakeUpHelper>,
-}
-impl Handler {
-    fn new() -> Arc<Self> {
-        let h = Arc::new(LockWakeUpHelper(SpinLock::new(
-            WakeUpHelper::new(null_mut()).unwrap(),
-        )));
-        let res = Arc::new(Handler { handler: h });
-        return res;
-    }
-}
-pub struct LockWakeUpHelper(SpinLock<WakeUpHelper>);
+
 /// WakeUpHelper函数对应的结构体
 pub struct WakeUpHelper {
-    pcb: Option<process_control_block>,
-    // FIXME self_ref
-    // self_ref: Weak<LockWakeUpHelper>,
+    pcb: &'static mut process_control_block,
 }
+
 impl WakeUpHelper {
-    pub fn new(in_pcb: *mut process_control_block) -> Option<WakeUpHelper> {
-        if in_pcb == null_mut() {
-            return None;
-        } else {
-            return Some(WakeUpHelper {
-                pcb: Some(unsafe { *in_pcb }),
-                // self_ref: Default::default(),
-            });
-        }
+    pub fn new(pcb: &'static mut process_control_block) -> Box<WakeUpHelper> {
+        return Box::new(WakeUpHelper { pcb });
     }
 }
 
 impl TimerFunction for WakeUpHelper {
-    fn run(&self) {
-        match self.pcb {
-            None => {
-                kdebug!("pcb can't be none");
-                return;
-            }
-            Some(mut pcb) => unsafe {
-                process_wakeup(&mut pcb);
-            },
+    fn run(&mut self) {
+        unsafe {
+            process_wakeup(self.pcb);
         }
     }
 }
 
-/// 定时器类型
-pub struct Timer {
-    /// 定时器结束时刻
-    pub expire_jiffies: u64,
-    /// 定时器需要执行的函数结构体
-    pub timer_func: Arc<dyn TimerFunction>,
-}
+pub struct Timer(SpinLock<InnerTimer>);
+
 impl Timer {
     /// @brief 创建一个定时器（单位：ms）
     ///
     /// @param timer_func 定时器需要执行的函数对应的结构体
     ///
-    /// @param expire_jiffies_ms 定时器结束时刻
+    /// @param expire_jiffies 定时器结束时刻
     ///
     /// @return 定时器结构体
-    pub fn create_timer_ms(
-        timer_func: Arc<dyn TimerFunction>,
-        expire_jiffies_ms: u64,
-    ) -> Arc<Timer> {
-        return Arc::new(Timer {
-            expire_jiffies: expire_jiffies_ms,
-            timer_func: timer_func,
-        });
-    }
+    pub fn new(timer_func: Box<dyn TimerFunction>, expire_jiffies: u64) -> Arc<Self> {
+        let result: Arc<Timer> = Arc::new(Timer(SpinLock::new(InnerTimer {
+            expire_jiffies,
+            timer_func,
+            self_ref: Weak::default(),
+        })));
 
-    /// @brief 创建一个定时器（单位：us）
-    ///
-    /// @param timer_func 定时器需要执行的函数对应的结构体
-    ///
-    /// @param expire_jiffies_ms 定时器结束时刻
-    ///
-    /// @return 定时器结构体
-    pub fn create_timer_us(
-        timer_func: Arc<dyn TimerFunction>,
-        expire_jiffies_us: u64,
-    ) -> Arc<Timer> {
-        return Arc::new(Timer {
-            expire_jiffies: expire_jiffies_us,
-            timer_func: timer_func,
-        });
+        result.0.lock().self_ref = Arc::downgrade(&result);
+
+        return result;
     }
 
     /// @brief 将定时器插入到定时器链表中
-    pub fn push_timer(&self) {
-        let timer_list: &mut SpinLockGuard<LinkedList<Arc<Timer>>> = &mut TIMER_LIST.lock();
+    pub fn activate(&self) {
+        let timer_list = &mut TIMER_LIST.lock();
+        let inner_guard = self.0.lock();
         // 链表为空，则直接插入
         if timer_list.is_empty() {
             // FIXME push_timer
-            // timer_list.push_back(self);
+            timer_list.push_back(inner_guard.self_ref.upgrade().unwrap());
             return;
         }
 
         // 筛选出比timer_func晚结束的定时器
-        let mut later_timer_funcs: LinkedList<Arc<Timer>> = timer_list
-            .drain_filter(|x| x.expire_jiffies > self.expire_jiffies)
+        let mut later_timer_funcs = timer_list
+            .drain_filter(|x| x.0.lock().expire_jiffies > inner_guard.expire_jiffies)
             .collect();
 
         // 将定时器插入到链表中
@@ -132,59 +91,39 @@ impl Timer {
         timer_list.append(&mut later_timer_funcs);
     }
 
-    /// @brief 让pcb休眠timeout时间
-    ///
-    /// @param timeout 需要休眠的时间
-    ///
-    /// @return Ok(i64) 剩余需要休眠的时间
-    ///
-    /// @return Err(SystemError) 错误码
-    pub fn schedule_timeout_ms(&self, timeout: i64) -> Result<i64, SystemError> {
-        if timeout == MAX_TIMEOUT {
-            sched();
-            return Ok(MAX_TIMEOUT);
-        } else if timeout < 0 {
-            kdebug!("timeout can't less than 0");
-            return Err(SystemError::EINVAL);
-        } else {
-            self.push_timer();
-            current_pcb().state &= (!PROC_RUNNING) as u64;
-            sched();
-            let sched_clock: i64 = timer_jiffies;
-            let time_remaining: i64 = timer_jiffies - sched_clock;
-            if time_remaining >= timeout {
-                // 返回剩余时间
-                return Ok(time_remaining);
-            } else {
-                return Ok(0);
-            }
-        }
+    #[inline]
+    fn run(&self) {
+        self.0.lock().timer_func.run();
     }
 }
 
-/// @brief 处理时间软中断
-///
-/// @param data
-#[no_mangle]
-pub extern "C" fn do_timer_softirq(_data: *mut c_void) {
-    let timer_list = &mut TIMER_LIST.lock();
-    // 最多只处理TIMER_RUN_CYCLE_THRESHOLD个计时器
-    for pos in 0..TIMER_RUN_CYCLE_THRESHOLD {
-        if pos < timer_list.len()
-            && timer_list.front().unwrap().expire_jiffies <= timer_jiffies.try_into().unwrap()
-        {
-            let timer = timer_list.pop_front().unwrap();
-            timer.timer_func.run();
-        } else {
-            break;
-        }
-    }
+/// 定时器类型
+pub struct InnerTimer {
+    /// 定时器结束时刻
+    pub expire_jiffies: u64,
+    /// 定时器需要执行的函数结构体
+    pub timer_func: Box<dyn TimerFunction>,
+    // FIXME self_ref
+    self_ref: Weak<Timer>,
 }
 
-pub struct DoTimerSoftirq {}
+pub struct DoTimerSoftirq;
 impl TrapVec for DoTimerSoftirq {
     fn run(&self) {
-        do_timer_softirq(null_mut());
+        // 最多只处理TIMER_RUN_CYCLE_THRESHOLD个计时器
+        for _ in 0..TIMER_RUN_CYCLE_THRESHOLD {
+            let timer_list = &mut TIMER_LIST.lock();
+
+            if timer_list.is_empty() {
+                break;
+            }
+
+            if timer_list.front().unwrap().0.lock().expire_jiffies <= timer_jiffies as u64 {
+                let timer = timer_list.pop_front().unwrap();
+                drop(timer_list);
+                timer.run();
+            }
+        }
     }
 }
 impl DoTimerSoftirq {
@@ -197,8 +136,52 @@ impl DoTimerSoftirq {
 #[no_mangle]
 pub fn timer_init() {
     // FIXME 调用register_trap
-    // let do_timer_softirq = Some(Arc::new(DoTimerSoftirq::new()));
-    // TRAP_VECTORS
-    //     .lock()
-    //     .register_trap(TrapNumber::TIMER, do_timer_softirq);
+    let do_timer_softirq = Arc::new(DoTimerSoftirq::new());
+    TRAP_VECTORS
+        .lock()
+        .register_trap(TrapNumber::TIMER, do_timer_softirq)
+        .expect("Failed to register timer softirq");
+}
+
+/// 计算接下来n毫秒对应的定时器时间片
+pub fn next_n_ms_timer_jiffies(expire_ms: u64) -> u64 {
+    timer_jiffies as u64 + 1000 * (expire_ms)
+}
+/// 计算接下来n微秒对应的定时器时间片
+pub fn next_n_us_timer_jiffies(expire_us: u64) -> u64 {
+    timer_jiffies as u64 + (expire_us)
+}
+
+/// @brief 让pcb休眠timeout个jiffies
+///
+/// @param timeout 需要休眠的时间(单位：jiffies)
+///
+/// @return Ok(i64) 剩余需要休眠的时间(单位：jiffies)
+///
+/// @return Err(SystemError) 错误码
+pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
+    if timeout == MAX_TIMEOUT {
+        sched();
+        return Ok(MAX_TIMEOUT);
+    } else if timeout < 0 {
+        kdebug!("timeout can't less than 0");
+        return Err(SystemError::EINVAL);
+    } else {
+        // 禁用中断，防止在这段期间发生调度，造成死锁
+        cli();
+        timeout += timer_jiffies;
+        let timer = Timer::new(WakeUpHelper::new(current_pcb()), timeout as u64);
+        timer.activate();
+        current_pcb().state &= (!PROC_RUNNING) as u64;
+        sti();
+
+        sched();
+        let time_remaining: i64 = timeout - timer_jiffies;
+        if time_remaining >= 0 {
+            // 被提前唤醒，返回剩余时间
+            return Ok(time_remaining);
+        } else {
+            return Ok(0);
+        }
+    }
 }

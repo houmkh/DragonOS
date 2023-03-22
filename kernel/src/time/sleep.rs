@@ -1,9 +1,13 @@
 use core::{arch::x86_64::_rdtsc, ptr::null_mut};
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use crate::{
-    arch::{asm::current::current_pcb, sched::sched},
+    arch::{
+        asm::current::current_pcb,
+        interrupt::{cli, sti},
+        sched::sched,
+    },
     include::bindings::bindings::{
         timespec, useconds_t, Cpu_tsc_freq, PF_NEED_SCHED, PROC_INTERRUPTIBLE,
     },
@@ -11,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    timer::{Timer, WakeUpHelper},
+    timer::{next_n_us_timer_jiffies, InnerTimer, Timer, WakeUpHelper},
     TimeSpec,
 };
 
@@ -37,23 +41,28 @@ pub fn nano_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
             tv_nsec: 0,
         });
     }
-    let handler = WakeUpHelper::new(current_pcb());
-    if handler.is_some() {
-        let nanosleep_handler: Arc<WakeUpHelper> = Arc::new(handler.unwrap());
-        let timer = Timer::create_timer_us(nanosleep_handler, (sleep_time.tv_nsec / 1000) as u64);
-        timer.push_timer();
-        current_pcb().state = PROC_INTERRUPTIBLE as u64;
-        current_pcb().flags |= PF_NEED_SCHED as u64;
-        sched();
+    // 创建定时器
+    let handler: Box<WakeUpHelper> = WakeUpHelper::new(current_pcb());
+    let timer: Arc<Timer> = Timer::new(
+        handler,
+        next_n_us_timer_jiffies((sleep_time.tv_nsec / 1000) as u64),
+    );
 
-        // TODO: 增加信号唤醒的功能后，返回正确的剩余时间
-
-        return Ok(TimeSpec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        });
+    cli();
+    timer.activate();
+    unsafe {
+        current_pcb().mark_sleep_interruptible();
     }
-    return Err(SystemError::EINVAL);
+    sti();
+
+    sched();
+
+    // TODO: 增加信号唤醒的功能后，返回正确的剩余时间
+
+    return Ok(TimeSpec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    });
 }
 
 /// @brief 休眠指定时间（单位：微秒）
