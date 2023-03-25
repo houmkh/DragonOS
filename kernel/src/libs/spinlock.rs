@@ -154,6 +154,7 @@ pub struct SpinLock<T> {
 #[derive(Debug)]
 pub struct SpinLockGuard<'a, T: 'a> {
     lock: &'a SpinLock<T>,
+    flag: u64,
 }
 
 /// 向编译器保证，SpinLock在线程之间是安全的.
@@ -172,7 +173,20 @@ impl<T> SpinLock<T> {
     pub fn lock(&self) -> SpinLockGuard<T> {
         self.lock.lock();
         // 加锁成功，返回一个守卫
-        return SpinLockGuard { lock: self };
+        return SpinLockGuard {
+            lock: self,
+            flag: 0,
+        };
+    }
+
+    pub fn lock_irqsave(&self)-> SpinLockGuard<T> {
+        let mut flags:u64 = 0;
+        self.lock.lock_irqsave(&mut flags);
+        // 加锁成功，返回一个守卫
+        return SpinLockGuard {
+            lock: self,
+            flag: flags,
+        };
     }
 }
 
@@ -195,6 +209,10 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 /// @brief 为SpinLockGuard实现Drop方法，那么，一旦守卫的生命周期结束，就会自动释放自旋锁，避免了忘记放锁的情况
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
+        if self.flag != 0{
+            self.lock.lock.unlock_irqrestore(&self.flag);
+            return;
+        }
         self.lock.lock.unlock();
     }
 }

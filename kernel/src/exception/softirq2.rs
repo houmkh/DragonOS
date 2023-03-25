@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
-use alloc::{sync::Arc, vec::Vec};
-use num_traits::{FromPrimitive, ToPrimitive};
+use alloc::{sync::Arc};
+use num_traits::{FromPrimitive};
 
 use crate::{
     arch::interrupt::{cli, sti},
@@ -12,19 +12,19 @@ use crate::{
 const MAX_SOFTIRQ_NUM: u64 = 64;
 const MAX_LOCK_TRIAL_TIME: u64 = 50;
 lazy_static! {
-    pub static ref TRAP_VECTORS: SpinLock<Trap> = SpinLock::new(Trap::new());
+    pub static ref SOFTIRQ_VECTORS: SpinLock<Softirq> = SpinLock::new(Softirq::new());
 }
 /// 软中断向量号码
 #[allow(dead_code)]
 #[repr(u8)]
 #[derive(FromPrimitive, Copy, Clone)]
-pub enum TrapNumber {
+pub enum SoftirqNumber {
     /// 时钟软中断信号
     TIMER = 0,
     VideoRefresh = 1, //帧缓冲区刷新软中断
 }
 
-impl From<u64> for TrapNumber {
+impl From<u64> for SoftirqNumber {
     fn from(value: u64) -> Self {
         return <Self as FromPrimitive>::from_u64(value).unwrap();
     }
@@ -54,27 +54,27 @@ impl VecStatus {
         self.insert(num);
     }
 }
-pub trait TrapVec: Send + Sync {
+pub trait SoftirqVec: Send + Sync {
     fn run(&self);
 }
 
-pub struct Trap {
+pub struct Softirq {
     pending: VecStatus,
     running: VecStatus,
-    table: [Option<Arc<dyn TrapVec>>; MAX_SOFTIRQ_NUM as usize],
+    table: [Option<Arc<dyn SoftirqVec>>; MAX_SOFTIRQ_NUM as usize],
 }
-impl Trap {
-    fn new() -> Trap {
-        let mut data: [MaybeUninit<Option<Arc<dyn TrapVec>>>; MAX_SOFTIRQ_NUM as usize] =
+impl Softirq {
+    fn new() -> Softirq {
+        let mut data: [MaybeUninit<Option<Arc<dyn SoftirqVec>>>; MAX_SOFTIRQ_NUM as usize] =
             unsafe { MaybeUninit::uninit().assume_init() };
         for elem in &mut data[..] {
             elem.write(None);
         }
-        let data: [Option<Arc<dyn TrapVec>>; MAX_SOFTIRQ_NUM as usize] = unsafe {
-            mem::transmute::<_, [Option<Arc<dyn TrapVec>>; MAX_SOFTIRQ_NUM as usize]>(data)
+        let data: [Option<Arc<dyn SoftirqVec>>; MAX_SOFTIRQ_NUM as usize] = unsafe {
+            mem::transmute::<_, [Option<Arc<dyn SoftirqVec>>; MAX_SOFTIRQ_NUM as usize]>(data)
         };
 
-        return Trap {
+        return Softirq {
             pending: VecStatus::default(),
             running: VecStatus::default(),
             table: data,
@@ -83,24 +83,24 @@ impl Trap {
 
     /// @brief 注册软中断向量
     ///
-    /// @param trap_num 中断向量号
+    /// @param softirq_num 中断向量号
     ///
     /// @param hanlder 中断函数对应的结构体
-    pub fn register_trap(
+    pub fn register_softirq(
         &mut self,
-        trap_num: TrapNumber,
-        handler: Arc<dyn TrapVec>,
+        softirq_num: SoftirqNumber,
+        handler: Arc<dyn SoftirqVec>,
     ) -> Result<i32, SystemError> {
-        // let self = &mut TRAP_VECTORS.lock();
+        // let self = &mut SOFTIRQ_VECTORS.lock();
         // 判断该软中断向量是否已经被注册
-        if self.table[trap_num as usize].is_some() {
+        if self.table[softirq_num as usize].is_some() {
             return Err(SystemError::EINVAL);
         }
-        self.table[trap_num as usize] = Some(handler);
+        self.table[softirq_num as usize] = Some(handler);
 
         // 将对应位置的running置0，pending置1
-        self.running.clear_bit(trap_num as u64);
-        self.pending.set_bit(trap_num as u64);
+        self.running.clear_bit(softirq_num as u64);
+        self.pending.set_bit(softirq_num as u64);
 
         return Ok(0);
     }
@@ -108,16 +108,16 @@ impl Trap {
     /// @brief 解注册软中断向量
     ///
     /// @param irq_num 中断向量号码   
-    pub fn unregister_trap(&mut self, trap_num: TrapNumber) {
+    pub fn unregister_softirq(&mut self, softirq_num: SoftirqNumber) {
         // 将软中断向量清空
-        self.table[trap_num as usize] = None;
+        self.table[softirq_num as usize] = None;
 
         // 将对应位置的pending和runing都置0
-        self.running.clear_bit(trap_num as u64);
-        self.pending.clear_bit(trap_num as u64);
+        self.running.clear_bit(softirq_num as u64);
+        self.pending.clear_bit(softirq_num as u64);
     }
 
-    pub fn do_trap(&mut self) {
+    pub fn do_softirq(&mut self) {
         sti();
         if self.pending.is_empty() {
             return;
@@ -133,4 +133,33 @@ impl Trap {
         }
         cli();
     }
+
+    pub fn raise_softirq(&mut self, softirq_num: SoftirqNumber) {
+        self.pending.set_bit(softirq_num as u64);
+    }
+}
+
+// ======= 以下为给C提供的接口 =======
+#[no_mangle]
+pub extern "C" fn raise_softirq_c(softirq_num: u32) {
+    SOFTIRQ_VECTORS
+        .lock()
+        .raise_softirq(SoftirqNumber::from(softirq_num as u64));
+}
+
+#[no_mangle]
+pub extern "C" fn unregister_softirq_c(softirq_num: u32) {
+    SOFTIRQ_VECTORS
+        .lock()
+        .unregister_softirq(SoftirqNumber::from(softirq_num as u64));
+}
+
+#[no_mangle]
+pub extern "C" fn do_softirq() {
+    SOFTIRQ_VECTORS.lock().do_softirq();
+}
+
+#[no_mangle]
+pub extern "C" fn clear_softirq_pending(softirq_num: u32) {
+    SOFTIRQ_VECTORS.lock().pending.clear_bit(softirq_num as u64);
 }

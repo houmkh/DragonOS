@@ -5,3 +5,4 @@ pub mod timers;
 pub mod tty;
 pub mod uart;
 pub mod virtio;
+pub mod video;

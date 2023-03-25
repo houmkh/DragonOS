@@ -8,14 +8,13 @@ use crate::{
         interrupt::{cli, sti},
         sched::sched,
     },
-    include::bindings::bindings::{
-        timespec, useconds_t, Cpu_tsc_freq, PF_NEED_SCHED, PROC_INTERRUPTIBLE,
-    },
+    include::bindings::bindings::{timespec, useconds_t, Cpu_tsc_freq},
+    kdebug,
     syscall::SystemError,
 };
 
 use super::{
-    timer::{next_n_us_timer_jiffies, InnerTimer, Timer, WakeUpHelper},
+    timer::{next_n_us_timer_jiffies, Timer, WakeUpHelper},
     TimeSpec,
 };
 
@@ -35,7 +34,9 @@ pub fn nano_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
     if sleep_time.tv_nsec < 500000 {
         let expired_tsc: u64 =
             unsafe { _rdtsc() + (sleep_time.tv_nsec as u64 * Cpu_tsc_freq) / 1000000000 };
-        while unsafe { _rdtsc() } < expired_tsc {}
+        while unsafe { _rdtsc() } < expired_tsc {
+            kdebug!("while in nano_sleep");
+        }
         return Ok(TimeSpec {
             tv_sec: 0,
             tv_nsec: 0,
@@ -79,6 +80,8 @@ pub fn us_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
     };
 }
 
+//===== 以下为提供给C的接口 =====
+
 /// @brief 休眠指定时间（单位：纳秒）（提供给C的接口）
 ///
 /// @param sleep_time 指定休眠的时间
@@ -90,25 +93,28 @@ pub fn us_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
 /// @return Err(SystemError) 错误码
 #[no_mangle]
 pub extern "C" fn nano_sleep_c(
-    sleep_time: timespec,
+    sleep_time: *const timespec,
     rm_time: *mut timespec,
 ) -> Result<i32, SystemError> {
+    if sleep_time == null_mut() {
+        return Err(SystemError::EINVAL);
+    }
     let slt_spec = TimeSpec {
-        tv_sec: sleep_time.tv_sec,
-        tv_nsec: sleep_time.tv_nsec,
+        tv_sec: unsafe { *sleep_time }.tv_sec,
+        tv_nsec: unsafe { *sleep_time }.tv_nsec,
     };
 
     match nano_sleep(slt_spec) {
         Ok(value) => {
             if rm_time != null_mut() {
-                unsafe {
-                    (*rm_time).tv_sec = value.tv_sec;
-                    (*rm_time).tv_nsec = value.tv_nsec;
-                }
+                unsafe { *rm_time }.tv_sec = value.tv_sec;
+                unsafe { *rm_time }.tv_nsec = value.tv_nsec;
             }
+            kdebug!("nano_sleep_c run successfully");
             return Ok(0);
         }
         Err(err) => {
+            kdebug!("nano_sleep_c run failed");
             return Err(err);
         }
     }
@@ -122,13 +128,19 @@ pub extern "C" fn nano_sleep_c(
 ///
 /// @return Err(SystemError) 错误码
 #[no_mangle]
-pub extern "C" fn us_sleep_c(usec: useconds_t) -> Result<i32, SystemError> {
+pub extern "C" fn rs_us_sleep(usec: useconds_t) -> Result<i32, SystemError> {
     let sleep_time = TimeSpec {
         tv_sec: (usec / 1000000) as i64,
         tv_nsec: ((usec % 1000000) * 1000) as i64,
     };
     match us_sleep(sleep_time) {
-        Ok(_) => return Ok(0),
-        Err(err) => return Err(err),
+        Ok(_) => {
+            kdebug!("rs_us_sleep run successfully");
+            return Ok(0);
+        }
+        Err(err) => {
+            kdebug!("rs_us_sleep run failed");
+            return Err(err);
+        }
     };
 }

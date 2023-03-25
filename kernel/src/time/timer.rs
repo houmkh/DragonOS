@@ -1,5 +1,3 @@
-use core::{ffi::c_void, ptr::null_mut};
-
 use alloc::{
     boxed::Box,
     collections::LinkedList,
@@ -7,17 +5,23 @@ use alloc::{
 };
 
 use crate::{
-    arch::{asm::current::current_pcb, sched::sched, interrupt::{cli, sti}},
-    exception::softirq2::{TrapNumber, TrapVec, TRAP_VECTORS},
-    include::bindings::bindings::{process_control_block, process_wakeup, PROC_RUNNING},
+    arch::{
+        asm::current::current_pcb,
+        interrupt::{cli, sti},
+        sched::sched,
+    },
+    exception::softirq2::{SoftirqNumber, SoftirqVec, SOFTIRQ_VECTORS},
+    include::bindings::bindings::{
+        process_control_block, process_wakeup, pt_regs, timer_jiffies, PROC_RUNNING,
+    },
     kdebug,
-    libs::spinlock::{SpinLock, SpinLockGuard},
+    libs::spinlock::SpinLock,
     syscall::SystemError,
 };
 
 const MAX_TIMEOUT: i64 = i64::MAX;
 const TIMER_RUN_CYCLE_THRESHOLD: usize = 20;
-pub static timer_jiffies: i64 = 0;
+// pub static mut timer_jiffies: u64;
 
 lazy_static! {
     pub static ref TIMER_LIST: SpinLock<LinkedList<Arc<Timer>>> = SpinLock::new(LinkedList::new());
@@ -71,6 +75,7 @@ impl Timer {
 
     /// @brief 将定时器插入到定时器链表中
     pub fn activate(&self) {
+        kdebug!("activate");
         let timer_list = &mut TIMER_LIST.lock();
         let inner_guard = self.0.lock();
         // 链表为空，则直接插入
@@ -80,15 +85,16 @@ impl Timer {
             return;
         }
 
-        // 筛选出比timer_func晚结束的定时器
-        let mut later_timer_funcs = timer_list
-            .drain_filter(|x| x.0.lock().expire_jiffies > inner_guard.expire_jiffies)
-            .collect();
-
-        // 将定时器插入到链表中
-        // FIXME push_timer
-        // timer_list.push_back(self);
-        timer_list.append(&mut later_timer_funcs);
+        let mut split_pos: usize = 0;
+        for (pos, elt) in timer_list.iter().enumerate() {
+            if elt.0.lock().expire_jiffies > inner_guard.expire_jiffies {
+                split_pos = pos;
+                break;
+            }
+        }
+        let mut temp_list: LinkedList<Arc<Timer>> = timer_list.split_off(split_pos);
+        timer_list.push_back(inner_guard.self_ref.upgrade().unwrap());
+        timer_list.append(&mut temp_list);
     }
 
     #[inline]
@@ -103,15 +109,17 @@ pub struct InnerTimer {
     pub expire_jiffies: u64,
     /// 定时器需要执行的函数结构体
     pub timer_func: Box<dyn TimerFunction>,
-    // FIXME self_ref
+    /// self_ref
     self_ref: Weak<Timer>,
 }
 
 pub struct DoTimerSoftirq;
-impl TrapVec for DoTimerSoftirq {
+impl SoftirqVec for DoTimerSoftirq {
     fn run(&self) {
         // 最多只处理TIMER_RUN_CYCLE_THRESHOLD个计时器
         for _ in 0..TIMER_RUN_CYCLE_THRESHOLD {
+            kdebug!("DoTimerSoftirq run");
+
             let timer_list = &mut TIMER_LIST.lock();
 
             if timer_list.is_empty() {
@@ -133,14 +141,14 @@ impl DoTimerSoftirq {
 }
 
 /// @brief 初始化timer模块
-#[no_mangle]
 pub fn timer_init() {
     // FIXME 调用register_trap
     let do_timer_softirq = Arc::new(DoTimerSoftirq::new());
-    TRAP_VECTORS
+    SOFTIRQ_VECTORS
         .lock()
-        .register_trap(TrapNumber::TIMER, do_timer_softirq)
+        .register_softirq(SoftirqNumber::TIMER, do_timer_softirq)
         .expect("Failed to register timer softirq");
+    kdebug!("timer initiated successfully");
 }
 
 /// 计算接下来n毫秒对应的定时器时间片
@@ -169,14 +177,14 @@ pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
     } else {
         // 禁用中断，防止在这段期间发生调度，造成死锁
         cli();
-        timeout += timer_jiffies;
+        timeout += timer_jiffies as i64;
         let timer = Timer::new(WakeUpHelper::new(current_pcb()), timeout as u64);
         timer.activate();
         current_pcb().state &= (!PROC_RUNNING) as u64;
         sti();
 
         sched();
-        let time_remaining: i64 = timeout - timer_jiffies;
+        let time_remaining: i64 = timeout - timer_jiffies as i64;
         if time_remaining >= 0 {
             // 被提前唤醒，返回剩余时间
             return Ok(time_remaining);
@@ -184,4 +192,55 @@ pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
             return Ok(0);
         }
     }
+}
+// ====== 重构完成后请删掉extern C ======
+#[no_mangle]
+pub extern "C" fn clock() -> u64 {
+    return timer_jiffies;
+}
+#[no_mangle]
+pub extern "C" fn sys_clock(_regs: *const pt_regs) -> u64 {
+    return timer_jiffies;
+}
+
+// ====== 以下为给C提供的接口 ======
+#[no_mangle]
+pub extern "C" fn schedule_timeout_c(timeout: i64) -> Result<i64, SystemError> {
+    match schedule_timeout(timeout) {
+        Ok(v) => {
+            kdebug!("schedule_timeout_c run successfully");
+            return Ok(v);
+        }
+        Err(e) => {
+            kdebug!("schedule_timeout_c run failed");
+            return Err(e);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rs_timer_init() {
+    timer_init();
+}
+
+#[no_mangle]
+pub extern "C" fn rs_timer_next_n_ms_jiffies(expire_ms: u64) -> u64 {
+    return next_n_ms_timer_jiffies(expire_ms);
+}
+
+#[no_mangle]
+pub extern "C" fn rs_timer_next_n_us_jiffies(expire_us: u64) -> u64 {
+    return next_n_us_timer_jiffies(expire_us);
+}
+
+#[no_mangle]
+pub extern "C" fn rs_timer_get_first_expire() -> u64 {
+    kdebug!("rs_timer_get_first_expire");
+    let timer_list = &mut TIMER_LIST.lock_irqsave();
+    kdebug!("TIMER_LIST.lock_irqsave");
+    if timer_list.is_empty() {
+        return 0;
+    }
+    let res = timer_list.front().unwrap().0.lock().expire_jiffies;
+    return res;
 }

@@ -76,13 +76,14 @@ void HPET_handler(uint64_t number, uint64_t param, struct pt_regs *regs)
                      */
 
         // 若当前时间比定时任务的时间间隔大，则进入中断下半部
-        if (container_of(list_next(&timer_func_head.list), struct timer_func_list_t, list)->expire_jiffies <= timer_jiffies)
-            raise_softirq(TIMER_SIRQ);
+        // if (container_of(list_next(&timer_func_head.list), struct timer_func_list_t, list)->expire_jiffies <= timer_jiffies)
+        if (rs_timer_get_first_expire() <= timer_jiffies)
+            raise_softirq_c(TIMER_SIRQ);
 
         // 当时间到了，或进程发生切换时，刷新帧缓冲区
         if (timer_jiffies >= video_refresh_expire_jiffies || (video_last_refresh_pid != current_pcb->pid))
         {
-            raise_softirq(VIDEO_REFRESH_SIRQ);
+            raise_softirq_c(VIDEO_REFRESH_SIRQ);
             // 超过130ms仍未刷新完成，则重新发起刷新(防止由于进程异常退出导致的屏幕无法刷新)
             if (unlikely(timer_jiffies >= (video_refresh_expire_jiffies + (1 << 17))))
             {

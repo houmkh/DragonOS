@@ -44,4 +44,4 @@
 #include <driver/pci/pci.h>
 #include <driver/virtio/virtio.h>
 #include <smp/smp.h>
-
+#include <driver/video/video.h>

@@ -21,13 +21,16 @@ int video_init();
 
 /**
  * @brief 设置帧缓冲区刷新目标
- * 
- * @param buf 
- * @return int 
+ *
+ * @param buf
+ * @return int
  */
 int video_set_refresh_target(struct scm_buffer_info_t *buf);
 
 extern uint64_t video_refresh_expire_jiffies;
 extern uint64_t video_last_refresh_pid;
 
-extern void video_refresh_framebuffer();
+void video_refresh_framebuffer(void *data);
+
+// ===== 在rust中实现 =====
+extern void register_softirq_video();

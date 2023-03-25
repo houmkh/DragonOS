@@ -48,7 +48,8 @@ void reload_gdt()
     gdtp.size = bsp_gdt_size - 1;
     gdtp.gdt_vaddr = (ul)phys_2_virt((ul)&GDT_Table);
 
-    asm volatile("lgdt (%0)   \n\t" ::"r"(&gdtp) : "memory");
+    asm volatile("lgdt (%0)   \n\t" ::"r"(&gdtp)
+                 : "memory");
 }
 
 void reload_idt()
@@ -59,7 +60,8 @@ void reload_idt()
     // kdebug("gdtvaddr=%#018lx", p.gdt_vaddr);
     // kdebug("gdt size=%d", p.size);
 
-    asm volatile("lidt (%0)   \n\t" ::"r"(&idtp) : "memory");
+    asm volatile("lidt (%0)   \n\t" ::"r"(&idtp)
+                 : "memory");
 }
 
 // 初始化系统各模块
@@ -116,7 +118,7 @@ void system_initialize()
     sched_init();
     irq_init();
 
-    softirq_init();
+    // softirq_init();
 
     current_pcb->cpu_id = 0;
     current_pcb->preempt_count = 0;
@@ -128,7 +130,7 @@ void system_initialize()
     // sched_init();
     io_mfence();
 
-    timer_init();
+    rs_timer_init();
     // 这里必须加内存屏障，否则会出错
     io_mfence();
     smp_init();
@@ -154,7 +156,7 @@ void system_initialize()
     io_mfence();
     // current_pcb->preempt_count = 0;
     // kdebug("cpu_get_core_crysral_freq()=%ld", cpu_get_core_crysral_freq());
-    
+
     process_init();
     // 启用double buffer
     // scm_enable_double_buffer();  // 因为时序问题, 该函数调用被移到 initial_kernel_thread
@@ -167,7 +169,7 @@ void system_initialize()
 
     apic_timer_init();
     io_mfence();
-   
+
     // 这里不能删除，否则在O1会报错
     // while (1)
     //     pause();
