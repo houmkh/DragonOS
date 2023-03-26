@@ -1,7 +1,7 @@
 use core::mem::{self, MaybeUninit};
 
-use alloc::{sync::Arc};
-use num_traits::{FromPrimitive};
+use alloc::sync::Arc;
+use num_traits::FromPrimitive;
 
 use crate::{
     arch::interrupt::{cli, sti},
@@ -32,28 +32,19 @@ impl From<u64> for SoftirqNumber {
 
 bitflags! {
     #[derive(Default)]
-    pub struct VecStatus:u64{
-        const BASE_STATUS = 1;
+    pub struct VecStatus: u64 {
+        const TIMER = 1 << SoftirqNumber::TIMER as u64;
+        const VIDEO_REFRESH = 1 << SoftirqNumber::VideoRefresh as u64;
     }
 
 }
-impl VecStatus {
-    /// @brief 清除指定位
-    ///
-    /// @param cl it 需要清除的位对应的值
-    pub fn clear_bit(&mut self, cl_bit: u64) {
-        let num = VecStatus::from_bits_truncate(cl_bit);
-        self.remove(num);
-    }
 
-    /// @brief 清除指定位
-    ///
-    /// @param cl_bit 需要清除的位对应的值
-    pub fn set_bit(&mut self, st_bit: u64) {
-        let num = VecStatus::from_bits_truncate(st_bit);
-        self.insert(num);
+impl From<SoftirqNumber> for VecStatus{
+    fn from(value: SoftirqNumber) -> Self {
+        return Self::from_bits_truncate(value as u64);
     }
 }
+
 pub trait SoftirqVec: Send + Sync {
     fn run(&self);
 }
@@ -98,9 +89,8 @@ impl Softirq {
         }
         self.table[softirq_num as usize] = Some(handler);
 
-        // 将对应位置的running置0，pending置1
-        self.running.clear_bit(softirq_num as u64);
-        self.pending.set_bit(softirq_num as u64);
+        // 将对应位置的running置0
+        self.running.set(VecStatus::from(softirq_num), false);
 
         return Ok(0);
     }
@@ -113,8 +103,8 @@ impl Softirq {
         self.table[softirq_num as usize] = None;
 
         // 将对应位置的pending和runing都置0
-        self.running.clear_bit(softirq_num as u64);
-        self.pending.clear_bit(softirq_num as u64);
+        self.running.set(VecStatus::from(softirq_num), false);
+        self.pending.set(VecStatus::from(softirq_num), false);
     }
 
     pub fn do_softirq(&mut self) {
@@ -127,15 +117,16 @@ impl Softirq {
                 continue;
             }
             // 将running对应的位置1，pending对应的位置0,并执行函数
-            self.running.set_bit(softirq_num);
-            self.pending.clear_bit(softirq_num);
+            self.running.set(VecStatus::from(SoftirqNumber::from(softirq_num)), true);
+            self.pending.set(VecStatus::from(SoftirqNumber::from(softirq_num)), false);
+
             self.table[softirq_num as usize].as_ref().unwrap().run();
         }
         cli();
     }
 
     pub fn raise_softirq(&mut self, softirq_num: SoftirqNumber) {
-        self.pending.set_bit(softirq_num as u64);
+        self.pending.set(VecStatus::from(softirq_num), true);
     }
 }
 
@@ -161,5 +152,5 @@ pub extern "C" fn do_softirq() {
 
 #[no_mangle]
 pub extern "C" fn clear_softirq_pending(softirq_num: u32) {
-    SOFTIRQ_VECTORS.lock().pending.clear_bit(softirq_num as u64);
+    SOFTIRQ_VECTORS.lock().pending.set(VecStatus::from(SoftirqNumber::from(softirq_num as u64)), false);
 }
