@@ -6,7 +6,6 @@ use crate::{
         vfs::{core::generate_inode_id, file::FileMode, FileType, IndexNode, Metadata, PollStatus},
     },
     include::bindings::bindings::{vfs_file_operations_t, vfs_file_t, vfs_index_node_t, ENOTSUP},
-    kdebug,
     libs::spinlock::SpinLock,
     time::TimeSpec,
 };

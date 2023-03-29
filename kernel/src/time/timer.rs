@@ -145,7 +145,6 @@ pub fn timer_init() {
     // FIXME 调用register_trap
     let do_timer_softirq = Arc::new(DoTimerSoftirq::new());
     SOFTIRQ_VECTORS
-        .lock()
         .register_softirq(SoftirqNumber::TIMER, do_timer_softirq)
         .expect("Failed to register timer softirq");
     kdebug!("timer initiated successfully");
@@ -168,6 +167,7 @@ pub fn next_n_us_timer_jiffies(expire_us: u64) -> u64 {
 ///
 /// @return Err(SystemError) 错误码
 pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
+    kdebug!("schedule_timeout");
     if timeout == MAX_TIMEOUT {
         sched();
         return Ok(MAX_TIMEOUT);
@@ -192,6 +192,28 @@ pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
             return Ok(0);
         }
     }
+}
+
+pub fn timer_get_first_expire() -> Result<u64, SystemError> {
+    // FIXME
+    // kdebug!("rs_timer_get_first_expire,timer_jif = {:?}", timer_jiffies);
+    for _ in 0..10 {
+        match TIMER_LIST.try_lock() {
+            Ok(timer_list) => {
+                // kdebug!("rs_timer_get_first_expire TIMER_LIST lock successfully");
+                if timer_list.is_empty() {
+                    // kdebug!("timer_list is empty");
+                    return Ok(0);
+                } else {
+                    // kdebug!("timer_list not empty");
+                    return Ok(timer_list.front().unwrap().0.lock().expire_jiffies);
+                }
+            }
+            // 加锁失败返回啥？？
+            Err(_) => continue,
+        }
+    }
+    return Err(SystemError::EAGAIN);
 }
 // ====== 重构完成后请删掉extern C ======
 #[no_mangle]
@@ -234,13 +256,9 @@ pub extern "C" fn rs_timer_next_n_us_jiffies(expire_us: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn rs_timer_get_first_expire() -> u64 {
-    kdebug!("rs_timer_get_first_expire");
-    let timer_list = &mut TIMER_LIST.lock_irqsave();
-    kdebug!("TIMER_LIST.lock_irqsave");
-    if timer_list.is_empty() {
-        return 0;
+pub extern "C" fn rs_timer_get_first_expire() -> Result<u64, SystemError> {
+    match timer_get_first_expire() {
+        Ok(v) => return Ok(v),
+        Err(e) => return Err(e),
     }
-    let res = timer_list.front().unwrap().0.lock().expire_jiffies;
-    return res;
 }

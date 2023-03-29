@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use core::cell::UnsafeCell;
+use core::f32::consts::E;
 use core::ops::{Deref, DerefMut};
 use core::ptr::read_volatile;
 
@@ -133,6 +134,18 @@ impl RawSpinlock {
         self.lock();
     }
 
+    /// @brief 尝试保存中断状态到flags中，关闭中断，并对自旋锁加锁
+    /// @return 加锁成功->true
+    ///         加锁失败->false
+    #[inline(always)]
+    pub fn try_lock_irqsave(&self, flags: &mut u64) -> bool {
+        if self.try_lock() {
+            local_irq_save(flags);
+            return true;
+        }
+        return false;
+    }
+
     /// @brief 恢复rflags以及中断状态并解锁自旋锁
     pub fn unlock_irqrestore(&self, flags: &u64) {
         self.unlock();
@@ -179,14 +192,35 @@ impl<T> SpinLock<T> {
         };
     }
 
-    pub fn lock_irqsave(&self)-> SpinLockGuard<T> {
-        let mut flags:u64 = 0;
+    pub fn lock_irqsave(&self) -> SpinLockGuard<T> {
+        let mut flags: u64 = 0;
         self.lock.lock_irqsave(&mut flags);
         // 加锁成功，返回一个守卫
         return SpinLockGuard {
             lock: self,
             flag: flags,
         };
+    }
+
+    pub fn try_lock(&self) -> Result<SpinLockGuard<T>, bool> {
+        if self.lock.try_lock() {
+            return Ok(SpinLockGuard {
+                lock: self,
+                flag: 0,
+            });
+        }
+        return Err(false);
+    }
+
+    pub fn try_lock_irqsave(&self) -> Result<SpinLockGuard<T>, bool> {
+        let mut flags: u64 = 0;
+        if self.lock.try_lock_irqsave(&mut flags) {
+            return Ok(SpinLockGuard {
+                lock: self,
+                flag: flags,
+            });
+        }
+        return Err(false);
     }
 }
 
@@ -209,7 +243,7 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 /// @brief 为SpinLockGuard实现Drop方法，那么，一旦守卫的生命周期结束，就会自动释放自旋锁，避免了忘记放锁的情况
 impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
-        if self.flag != 0{
+        if self.flag != 0 {
             self.lock.lock.unlock_irqrestore(&self.flag);
             return;
         }

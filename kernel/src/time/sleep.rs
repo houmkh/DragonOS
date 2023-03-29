@@ -50,6 +50,7 @@ pub fn nano_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
     );
 
     cli();
+    kdebug!("nano_sleep timer.activate()");
     timer.activate();
     unsafe {
         current_pcb().mark_sleep_interruptible();

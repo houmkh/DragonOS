@@ -105,6 +105,7 @@ int video_reinitialize(bool level) // 这个函数会在main.c调用, 保证 vid
         init_frame_buffer();
     else
     {
+        kdebug("video_reinitialize,level = true");
         // 计算开始时间
         video_refresh_expire_jiffies = rs_timer_next_n_ms_jiffies(10 * REFRESH_INTERVAL);
 
@@ -114,8 +115,9 @@ int video_reinitialize(bool level) // 这个函数会在main.c调用, 保证 vid
 
         // 启用屏幕刷新软中断
         // register_softirq(VIDEO_REFRESH_SIRQ, &video_refresh_framebuffer, NULL);
-        register_softirq_video();
-        raise_softirq_c(VIDEO_REFRESH_SIRQ);
+        rs_register_softirq_video();
+        rs_raise_softirq(VIDEO_REFRESH_SIRQ);
+        kdebug("register_softirq_video and rs_raise_softirq");
     }
     return 0;
 }
@@ -129,7 +131,7 @@ int video_reinitialize(bool level) // 这个函数会在main.c调用, 保证 vid
 int video_set_refresh_target(struct scm_buffer_info_t *buf)
 {
 
-    unregister_softirq_c(VIDEO_REFRESH_SIRQ);
+    rs_unregister_softirq(VIDEO_REFRESH_SIRQ);
     // todo: 在completion实现后，在这里等待其他刷新任务完成，再进行下一步。
 
     // int counter = 100;
@@ -142,8 +144,8 @@ int video_set_refresh_target(struct scm_buffer_info_t *buf)
     // kdebug("buf = %#018lx", buf);
     video_refresh_target = buf;
     // register_softirq(VIDEO_REFRESH_SIRQ, &video_refresh_framebuffer, NULL);
-    register_softirq_video();
-    raise_softirq_c(VIDEO_REFRESH_SIRQ);
+    rs_register_softirq_video();
+    rs_raise_softirq(VIDEO_REFRESH_SIRQ);
 }
 
 /**

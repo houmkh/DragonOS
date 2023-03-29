@@ -33,4 +33,4 @@ extern uint64_t video_last_refresh_pid;
 void video_refresh_framebuffer(void *data);
 
 // ===== 在rust中实现 =====
-extern void register_softirq_video();
+extern void rs_register_softirq_video();

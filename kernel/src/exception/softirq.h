@@ -14,10 +14,10 @@
 
 // ==================implementation with rust===================
 // extern void softirq_init();
-extern void raise_softirq_c(uint32_t sirq_num);
-extern int unregister_softirq_c(uint32_t sirq_num);
-extern void do_softirq();
-extern void clear_softirq_pending(uint32_t);
+extern void rs_raise_softirq(uint32_t sirq_num);
+extern int rs_unregister_softirq(uint32_t sirq_num);
+extern void rs_do_softirq();
+extern void rs_clear_softirq_pending(uint32_t);
 
 // for temporary
 #define MAX_SOFTIRQ_NUM 64
