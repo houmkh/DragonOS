@@ -11,9 +11,7 @@ use crate::{
         sched::sched,
     },
     exception::softirq2::{SoftirqNumber, SoftirqVec, SOFTIRQ_VECTORS},
-    include::bindings::bindings::{
-        process_control_block, process_wakeup, pt_regs, timer_jiffies, PROC_RUNNING,
-    },
+    include::bindings::bindings::{process_control_block, process_wakeup, pt_regs, PROC_RUNNING},
     kdebug,
     libs::spinlock::SpinLock,
     syscall::SystemError,
@@ -21,7 +19,7 @@ use crate::{
 
 const MAX_TIMEOUT: i64 = i64::MAX;
 const TIMER_RUN_CYCLE_THRESHOLD: usize = 20;
-// pub static mut timer_jiffies: u64;
+static mut TIMER_JIFFIES: u64 = 0;
 
 lazy_static! {
     pub static ref TIMER_LIST: SpinLock<LinkedList<Arc<Timer>>> = SpinLock::new(LinkedList::new());
@@ -126,7 +124,9 @@ impl SoftirqVec for DoTimerSoftirq {
                 break;
             }
 
-            if timer_list.front().unwrap().0.lock().expire_jiffies <= timer_jiffies as u64 {
+            if timer_list.front().unwrap().0.lock().expire_jiffies
+                <= unsafe { TIMER_JIFFIES as u64 }
+            {
                 let timer = timer_list.pop_front().unwrap();
                 drop(timer_list);
                 timer.run();
@@ -152,11 +152,11 @@ pub fn timer_init() {
 
 /// 计算接下来n毫秒对应的定时器时间片
 pub fn next_n_ms_timer_jiffies(expire_ms: u64) -> u64 {
-    timer_jiffies as u64 + 1000 * (expire_ms)
+    return unsafe { TIMER_JIFFIES as u64 } + 1000 * (expire_ms);
 }
 /// 计算接下来n微秒对应的定时器时间片
 pub fn next_n_us_timer_jiffies(expire_us: u64) -> u64 {
-    timer_jiffies as u64 + (expire_us)
+    return unsafe { TIMER_JIFFIES as u64 } + (expire_us);
 }
 
 /// @brief 让pcb休眠timeout个jiffies
@@ -177,14 +177,14 @@ pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
     } else {
         // 禁用中断，防止在这段期间发生调度，造成死锁
         cli();
-        timeout += timer_jiffies as i64;
+        timeout += unsafe { TIMER_JIFFIES } as i64;
         let timer = Timer::new(WakeUpHelper::new(current_pcb()), timeout as u64);
         timer.activate();
         current_pcb().state &= (!PROC_RUNNING) as u64;
         sti();
 
         sched();
-        let time_remaining: i64 = timeout - timer_jiffies as i64;
+        let time_remaining: i64 = timeout - unsafe { TIMER_JIFFIES } as i64;
         if time_remaining >= 0 {
             // 被提前唤醒，返回剩余时间
             return Ok(time_remaining);
@@ -196,7 +196,7 @@ pub fn schedule_timeout(mut timeout: i64) -> Result<i64, SystemError> {
 
 pub fn timer_get_first_expire() -> Result<u64, SystemError> {
     // FIXME
-    // kdebug!("rs_timer_get_first_expire,timer_jif = {:?}", timer_jiffies);
+    // kdebug!("rs_timer_get_first_expire,timer_jif = {:?}", TIMER_JIFFIES);
     for _ in 0..10 {
         match TIMER_LIST.try_lock() {
             Ok(timer_list) => {
@@ -215,26 +215,31 @@ pub fn timer_get_first_expire() -> Result<u64, SystemError> {
     }
     return Err(SystemError::EAGAIN);
 }
+
+pub fn update_timer_jiffies(add_jiffies: u64) -> u64 {
+    unsafe { TIMER_JIFFIES += add_jiffies };
+    return unsafe { TIMER_JIFFIES };
+}
 // ====== 重构完成后请删掉extern C ======
 #[no_mangle]
 pub extern "C" fn clock() -> u64 {
-    return timer_jiffies;
+    return unsafe { TIMER_JIFFIES };
 }
 #[no_mangle]
 pub extern "C" fn sys_clock(_regs: *const pt_regs) -> u64 {
-    return timer_jiffies;
+    return unsafe { TIMER_JIFFIES };
 }
 
 // ====== 以下为给C提供的接口 ======
 #[no_mangle]
-pub extern "C" fn schedule_timeout_c(timeout: i64) -> Result<i64, SystemError> {
+pub extern "C" fn rs_schedule_timeout(timeout: i64) -> Result<i64, SystemError> {
     match schedule_timeout(timeout) {
         Ok(v) => {
-            kdebug!("schedule_timeout_c run successfully");
+            kdebug!("rs_schedule_timeout run successfully");
             return Ok(v);
         }
         Err(e) => {
-            kdebug!("schedule_timeout_c run failed");
+            kdebug!("rs_schedule_timeout run failed");
             return Err(e);
         }
     }
@@ -261,4 +266,9 @@ pub extern "C" fn rs_timer_get_first_expire() -> Result<u64, SystemError> {
         Ok(v) => return Ok(v),
         Err(e) => return Err(e),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn rs_update_timer_jiffies(add_jiffies: u64) -> u64 {
+    return update_timer_jiffies(add_jiffies);
 }

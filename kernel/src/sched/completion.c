@@ -93,7 +93,7 @@ void wait_for_completion(struct completion *x)
 {
     spin_lock(&x->wait_queue.lock);
     // __wait_for_common(x, &schedule_timeout_ms, MAX_TIMEOUT, PROC_UNINTERRUPTIBLE);
-    __wait_for_common(x, &schedule_timeout_c, MAX_TIMEOUT, PROC_UNINTERRUPTIBLE);
+    __wait_for_common(x, &rs_schedule_timeout, MAX_TIMEOUT, PROC_UNINTERRUPTIBLE);
     spin_unlock(&x->wait_queue.lock);
 }
 
@@ -109,7 +109,7 @@ long wait_for_completion_timeout(struct completion *x, long timeout)
     BUG_ON(timeout < 0);
     spin_lock(&x->wait_queue.lock);
     // timeout = __wait_for_common(x, &schedule_timeout_ms, timeout, PROC_UNINTERRUPTIBLE);
-    timeout = __wait_for_common(x, &schedule_timeout_c, timeout, PROC_UNINTERRUPTIBLE);
+    timeout = __wait_for_common(x, &rs_schedule_timeout, timeout, PROC_UNINTERRUPTIBLE);
     spin_unlock(&x->wait_queue.lock);
     return timeout;
 }
@@ -123,7 +123,7 @@ void wait_for_completion_interruptible(struct completion *x)
 {
     spin_lock(&x->wait_queue.lock);
     // __wait_for_common(x, &schedule_timeout_ms, MAX_TIMEOUT, PROC_INTERRUPTIBLE);
-    __wait_for_common(x, &schedule_timeout_c, MAX_TIMEOUT, PROC_INTERRUPTIBLE);
+    __wait_for_common(x, &rs_schedule_timeout, MAX_TIMEOUT, PROC_INTERRUPTIBLE);
     spin_unlock(&x->wait_queue.lock);
 }
 
@@ -140,7 +140,7 @@ long wait_for_completion_interruptible_timeout(struct completion *x, long timeou
 
     spin_lock(&x->wait_queue.lock);
     // timeout = __wait_for_common(x, &schedule_timeout_ms, timeout, PROC_INTERRUPTIBLE);
-    timeout = __wait_for_common(x, &schedule_timeout_c, timeout, PROC_INTERRUPTIBLE);
+    timeout = __wait_for_common(x, &rs_schedule_timeout, timeout, PROC_INTERRUPTIBLE);
     spin_unlock(&x->wait_queue.lock);
     return timeout;
 }
@@ -262,7 +262,7 @@ int __test_completion_worker(void *input_data)
     }
 
     // schedule_timeout_ms(50);
-    schedule_timeout_c(50);
+    rs_schedule_timeout(50);
     // for(uint64_t i=0;i<1e7;++i)
     //     pause();
     complete(data->one_to_one);

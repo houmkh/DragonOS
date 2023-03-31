@@ -1,18 +1,30 @@
-use core::mem::{self, MaybeUninit};
+use core::{
+    intrinsics::unlikely,
+    mem::{self, MaybeUninit},
+};
 
 use alloc::sync::Arc;
 use num_traits::FromPrimitive;
 
 use crate::{
-    arch::interrupt::{cli, sti},
-    include::bindings::bindings::timer_jiffies,
+    arch::{
+        asm::current::current_pcb,
+        interrupt::{cli, sti},
+    },
+    include::bindings::bindings::MAX_CPU_NUM,
     kdebug,
     libs::spinlock::SpinLock,
+    smp::core::smp_get_processor_id,
     syscall::SystemError,
+    time::timer::clock,
 };
 
 const MAX_SOFTIRQ_NUM: u64 = 64;
 const MAX_LOCK_TRIAL_TIME: u64 = 50;
+const MAX_SOFTIRQ_RESTART: i32 = 20;
+static mut CPU_PENDING: [VecStatus; MAX_CPU_NUM as usize] =
+    [VecStatus { bits: 0 }; MAX_CPU_NUM as usize];
+
 lazy_static! {
     pub static ref SOFTIRQ_VECTORS: Softirq = Softirq::new();
 }
@@ -52,9 +64,10 @@ pub trait SoftirqVec: Send + Sync {
 }
 
 pub struct Softirq {
-    pending: SpinLock<VecStatus>,
-    running: SpinLock<VecStatus>,
+    // pending: SpinLock<VecStatus>,
+    // running: SpinLock<VecStatus>,
     table: SpinLock<[Option<Arc<dyn SoftirqVec>>; MAX_SOFTIRQ_NUM as usize]>,
+    // local_cpu_pending: CpuPending,
 }
 impl Softirq {
     fn new() -> Softirq {
@@ -68,9 +81,10 @@ impl Softirq {
         };
 
         return Softirq {
-            pending: SpinLock::new(VecStatus::default()),
-            running: SpinLock::new(VecStatus::default()),
+            // pending: SpinLock::new(VecStatus::default()),
+            // running: SpinLock::new(VecStatus::default()),
             table: SpinLock::new(data),
+            // local_cpu_pending: unsafe { mem::zeroed() },
         };
     }
 
@@ -84,7 +98,7 @@ impl Softirq {
         softirq_num: SoftirqNumber,
         handler: Arc<dyn SoftirqVec>,
     ) -> Result<i32, SystemError> {
-        // kdebug!("register_softirq {:?}", softirq_num as u64);
+        kdebug!("register_softirq softirq_num = {:?}", softirq_num as u64);
 
         // let self = &mut SOFTIRQ_VECTORS.lock();
         // 判断该软中断向量是否已经被注册
@@ -97,8 +111,11 @@ impl Softirq {
         table_guard[softirq_num as usize] = Some(handler);
 
         // 将对应位置的running置0
-        self.running.lock().set(VecStatus::from(softirq_num), false);
-        kdebug!("register_softirq successfully, softirq_num = {:?}", softirq_num as u64);
+        // self.running.lock().set(VecStatus::from(softirq_num), false);
+        kdebug!(
+            "register_softirq successfully, softirq_num = {:?}",
+            softirq_num as u64
+        );
 
         return Ok(0);
     }
@@ -107,76 +124,84 @@ impl Softirq {
     ///
     /// @param irq_num 中断向量号码   
     pub fn unregister_softirq(&self, softirq_num: SoftirqNumber) {
-        kdebug!("unregister_softirq");
+        kdebug!("unregister_softirq softirq_num = {:?}", softirq_num as u64);
         let table_guard = &mut self.table.lock();
         // 将软中断向量清空
         table_guard[softirq_num as usize] = None;
 
         // 将对应位置的pending和runing都置0
-        self.running.lock().set(VecStatus::from(softirq_num), false);
-        self.pending.lock().set(VecStatus::from(softirq_num), false);
-    }
-
-    pub fn do_softirq(&self) {
-        kdebug!("do_softirq begin,timer_jif = {:?}", timer_jiffies);
-        // sti();
-        kdebug!("do_softirq sti");
-        // FIXME 尝试中断
-        match self.pending.try_lock() {
-            Ok(mut pending_guard) => {
-                kdebug!("do_softirq self.pending.lock()");
-
-                if pending_guard.is_empty() {
-                    kdebug!("do_softirq self.pending.is_empty()");
-                    // cli();
-                    return;
-                }
-                match self.table.try_lock() {
-                    Ok(mut v) => {
-                        // kdebug!("do_softirq lock successfully");
-                        let table_guard = &mut v;
-
-                        for softirq_num in 0..MAX_SOFTIRQ_NUM {
-                            if table_guard[softirq_num as usize].is_none() {
-                                continue;
-                            }
-                            // 将running对应的位置1，pending对应的位置0,并执行函数
-                            self.running
-                                .lock()
-                                .set(VecStatus::from(SoftirqNumber::from(softirq_num)), true);
-                            pending_guard
-                                .set(VecStatus::from(SoftirqNumber::from(softirq_num)), false);
-
-                            table_guard[softirq_num as usize].as_ref().unwrap().run();
-
-                            // self.running
-                            //     .lock()
-                            //     .set(VecStatus::from(SoftirqNumber::from(softirq_num)), false);
-                            // pending_guard
-                            //     .set(VecStatus::from(SoftirqNumber::from(softirq_num)), true);
-                        }
-                        // cli();
-                        kdebug!("do_softirq successfully");
-                        return;
-                    }
-                    Err(_) => return,
-                }
-            }
-            Err(_) => return,
+        // self.running.lock().set(VecStatus::from(softirq_num), false);
+        // 将对应CPU的pending置0
+        unsafe {
+            CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), false);
         }
     }
 
-    pub fn raise_softirq(&self, softirq_num: SoftirqNumber) {
-        // kdebug!("raise_softirq begin");
-        for _ in 0..10 {
-            match self.pending.try_lock() {
-                Ok(mut pending_guard) => {
-                    pending_guard.set(VecStatus::from(softirq_num), true);
-                    // kdebug!("raise_softirq successfully");
-                    return;
-                }
-                Err(_) => return,
+    pub fn do_softirq(&self) {
+        // TODO pcb的flags未修改
+        kdebug!("do_softirq begin");
+        let end = clock() + 500 * 2;
+        let cpu_id = smp_get_processor_id();
+        let mut max_restart = MAX_SOFTIRQ_RESTART;
+        loop {
+            unsafe {
+                CPU_PENDING[cpu_id as usize].bits = 0;
             }
+            sti();
+            for i in 0..MAX_SOFTIRQ_NUM {
+                let table_guard = &mut self.table.lock();
+                let softirq_func = &table_guard[i as usize];
+                if softirq_func.is_none() {
+                    continue;
+                }
+                let prev_count = current_pcb().preempt_count;
+
+                softirq_func.as_ref().unwrap().run();
+                drop(table_guard);
+                if unlikely(prev_count != current_pcb().preempt_count) {
+                    kdebug!(
+                        "entered softirq {:?} with preempt_count {:?},exited with {:?}",
+                        i,
+                        prev_count,
+                        current_pcb().preempt_count
+                    );
+                    current_pcb().preempt_count = prev_count;
+                }
+            }
+            cli();
+            max_restart -= 1;
+            if unsafe { !CPU_PENDING[cpu_id as usize].is_empty() } {
+                if clock() < end && max_restart > 0 {
+                    continue;
+                }
+            } else {
+                // TODO：当有softirqd时 唤醒它
+                break;
+            }
+        }
+        kdebug!("do_softirq exited");
+    }
+
+    pub fn raise_softirq(&self, softirq_num: SoftirqNumber) {
+        kdebug!("raise_softirq begin");
+        // for _ in 0..10 {
+        //     match self.pending.try_lock() {
+        //         Ok(mut pending_guard) => {
+        //             pending_guard.set(VecStatus::from(softirq_num), true);
+        //             // kdebug!("raise_softirq successfully");
+        //             return;
+        //         }
+        //         Err(_) => return,
+        //     }
+        // }
+        unsafe {
+            CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), true);
+        }
+        kdebug!("raise_softirq exited");
+    }
+    pub fn clear_softirq_pending(&self, softirq_num: SoftirqNumber) {
+        unsafe {
+            CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), false);
         }
     }
 }
@@ -199,8 +224,5 @@ pub extern "C" fn rs_do_softirq() {
 
 #[no_mangle]
 pub extern "C" fn rs_clear_softirq_pending(softirq_num: u32) {
-    SOFTIRQ_VECTORS.pending.lock().set(
-        VecStatus::from(SoftirqNumber::from(softirq_num as u64)),
-        false,
-    );
+    SOFTIRQ_VECTORS.clear_softirq_pending(SoftirqNumber::from(softirq_num as u64));
 }

@@ -11,6 +11,7 @@ use crate::{
 pub struct VideoRefreshFramebuffer {}
 impl SoftirqVec for VideoRefreshFramebuffer {
     fn run(&self) {
+        kdebug!("VideoRefreshFramebuffer run");
         unsafe {
             video_refresh_framebuffer(null_mut());
         }

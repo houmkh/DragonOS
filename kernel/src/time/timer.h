@@ -9,12 +9,13 @@
 // uint64_t volatile timer_jiffies = 0; // 系统时钟计数
 
 // ===== 在rust中实现 =====
-extern uint64_t timer_jiffies = 0;
+
 extern uint64_t rs_timer_get_first_expire();
 extern void rs_timer_init();
 extern uint64_t rs_timer_next_n_ms_jiffies(uint64_t expire_ms);
 extern uint64_t rs_timer_next_n_us_jiffies(uint64_t expire_us);
-extern int64_t schedule_timeout_c(int64_t timeout);
+extern int64_t rs_schedule_timeout(int64_t timeout);
+extern uint64_t rs_update_timer_jiffies(uint64_t add_jiffies);
 extern uint64_t clock();
 extern uint64_t sys_clock(struct pt_regs *regs);
 
