@@ -28,9 +28,10 @@ use crate::{
 const MAX_SOFTIRQ_NUM: u64 = 64;
 const MAX_LOCK_TRIAL_TIME: u64 = 50;
 const MAX_SOFTIRQ_RESTART: i32 = 20;
-static mut CPU_PENDING: [VecStatus; MAX_CPU_NUM as usize] =
-    [VecStatus { bits: 0 }; MAX_CPU_NUM as usize];
+// static mut CPU_PENDING: [VecStatus; MAX_CPU_NUM as usize] =
+//     [VecStatus { bits: 0 }; MAX_CPU_NUM as usize];
 
+static mut __CPU_PENDING: Option<Box<[VecStatus; MAX_CPU_NUM as usize]>> = None;
 static mut __SORTIRQ_VECTORS: *mut Softirq = null_mut();
 
 #[no_mangle]
@@ -41,8 +42,10 @@ pub extern "C" fn rs_softirq_init() {
 pub fn softirq_init() -> Result<(), SystemError> {
     unsafe {
         __SORTIRQ_VECTORS = Box::leak(Box::new(Softirq::new()));
+        __CPU_PENDING = Some(Box::new([VecStatus::default(); MAX_CPU_NUM as usize]));
+        let cpu_pending = __CPU_PENDING.as_mut().unwrap();
         for i in 0..MAX_CPU_NUM {
-            CPU_PENDING[i as usize] = VecStatus::default();
+            cpu_pending[i as usize] = VecStatus::default();
         }
     }
     return Ok(());
@@ -51,7 +54,14 @@ pub fn softirq_init() -> Result<(), SystemError> {
 #[inline(always)]
 pub fn softirq_vectors() -> &'static mut Softirq {
     unsafe {
-        return &mut *__SORTIRQ_VECTORS;
+        return __SORTIRQ_VECTORS.as_mut().unwrap();
+    }
+}
+
+#[inline(always)]
+fn cpu_pending(cpu_id: usize) -> &'static mut VecStatus {
+    unsafe {
+        return &mut __CPU_PENDING.as_mut().unwrap()[cpu_id];
     }
 }
 
@@ -162,11 +172,9 @@ impl Softirq {
         // 将对应位置的pending和runing都置0
         // self.running.lock().set(VecStatus::from(softirq_num), false);
         // 将对应CPU的pending置0
-        unsafe {
-            compiler_fence(Ordering::SeqCst);
-            CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), false);
-            compiler_fence(Ordering::SeqCst);
-        }
+        compiler_fence(Ordering::SeqCst);
+        cpu_pending(smp_get_processor_id() as usize).set(VecStatus::from(softirq_num), false);
+        compiler_fence(Ordering::SeqCst);
     }
 
     pub fn do_softirq(&self) {
@@ -177,10 +185,8 @@ impl Softirq {
         let mut max_restart = MAX_SOFTIRQ_RESTART;
         loop {
             compiler_fence(Ordering::SeqCst);
-            let pending = unsafe { CPU_PENDING[cpu_id as usize].bits };
-            unsafe {
-                CPU_PENDING[cpu_id as usize].bits = 0;
-            }
+            let pending = cpu_pending(cpu_id as usize).bits;
+            cpu_pending(cpu_id as usize).bits = 0;
             compiler_fence(Ordering::SeqCst);
             // if pending != 0 {
             //     kdebug!("do_softirq pending = {:#018x}", pending);
@@ -222,7 +228,7 @@ impl Softirq {
             cli();
             max_restart -= 1;
             compiler_fence(Ordering::SeqCst);
-            if unsafe { !CPU_PENDING[cpu_id as usize].is_empty() } {
+            if cpu_pending(cpu_id as usize).is_empty() {
                 compiler_fence(Ordering::SeqCst);
                 if clock() < end && max_restart > 0 {
                     continue;
@@ -255,19 +261,22 @@ impl Softirq {
         if softirq_num == SoftirqNumber::TIMER {
             kdebug!("timer, smp_get_processor_id()={}", smp_get_processor_id());
             // kdebug!("raise_softirq softirq_num = {:?}", softirq_num as u64);
-            unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.insert(VecStatus::TIMER);
+            // unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.insert(VecStatus::TIMER);
+            cpu_pending(smp_get_processor_id() as usize).insert(VecStatus::TIMER);
             // unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.set(VecStatus::TIMER, true);
         } else {
             kdebug!("video, smp_get_processor_id()={}", smp_get_processor_id());
-            let vs = VecStatus::from_bits_truncate(1 << 1);
-            kdebug!("raise_softirq vs = {:#018x}", vs.bits);
-            unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.insert(vs);
+            // let vs = VecStatus::from_bits_truncate(1 << 1);
+            // kdebug!("raise_softirq vs = {:#018x}", vs.bits);
+            // unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.insert(vs);
+
+            cpu_pending(smp_get_processor_id() as usize).insert(VecStatus::VIDEO_REFRESH);
         }
 
         compiler_fence(Ordering::SeqCst);
 
         // CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), true);
-        let bits = unsafe { CPU_PENDING[smp_get_processor_id() as usize] }.bits();
+        let bits = cpu_pending(smp_get_processor_id() as usize).bits();
         compiler_fence(Ordering::SeqCst);
         kdebug!("after raise_softirq [{softirq_num:?}], CPU_PENDING = {bits:#018x}");
         compiler_fence(Ordering::SeqCst);
@@ -276,11 +285,10 @@ impl Softirq {
         // kdebug!("raise_softirq exited");
     }
     pub fn clear_softirq_pending(&self, softirq_num: SoftirqNumber) {
-        unsafe {
-            compiler_fence(Ordering::SeqCst);
-            CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), false);
-            compiler_fence(Ordering::SeqCst);
-        }
+        compiler_fence(Ordering::SeqCst);
+        // CPU_PENDING[smp_get_processor_id() as usize].set(VecStatus::from(softirq_num), false);
+        cpu_pending(smp_get_processor_id() as usize).remove(VecStatus::from(softirq_num));
+        compiler_fence(Ordering::SeqCst);
     }
 }
 
