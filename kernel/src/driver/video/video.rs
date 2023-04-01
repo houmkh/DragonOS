@@ -3,12 +3,13 @@ use core::ptr::null_mut;
 use alloc::sync::Arc;
 
 use crate::{
-    exception::softirq2::{SoftirqNumber, SoftirqVec, SOFTIRQ_VECTORS},
+    exception::softirq2::{SoftirqNumber, SoftirqVec, softirq_vectors},
     include::bindings::bindings::video_refresh_framebuffer,
     kdebug,
 };
 
-pub struct VideoRefreshFramebuffer {}
+#[derive(Debug)]
+pub struct VideoRefreshFramebuffer;
 impl SoftirqVec for VideoRefreshFramebuffer {
     fn run(&self) {
         kdebug!("VideoRefreshFramebuffer run");
@@ -26,7 +27,7 @@ impl VideoRefreshFramebuffer {
 pub fn register_softirq_video() {
     kdebug!("register_softirq_video");
     let handler = Arc::new(VideoRefreshFramebuffer::new());
-    SOFTIRQ_VECTORS
+    softirq_vectors()
         .register_softirq(SoftirqNumber::VideoRefresh, handler)
         .expect("register_softirq_video run failed");
 }

@@ -10,7 +10,7 @@
 
 // ===== 在rust中实现 =====
 
-extern uint64_t rs_timer_get_first_expire();
+extern int64_t rs_timer_get_first_expire();
 extern void rs_timer_init();
 extern uint64_t rs_timer_next_n_ms_jiffies(uint64_t expire_ms);
 extern uint64_t rs_timer_next_n_us_jiffies(uint64_t expire_us);

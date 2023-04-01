@@ -81,12 +81,12 @@ void HPET_handler(uint64_t number, uint64_t param, struct pt_regs *regs)
         if (rs_timer_get_first_expire() <= clock())
         {
             rs_raise_softirq(TIMER_SIRQ);
-            kdebug("rs_raise_softirq TIMER_SIRQ in HPET");
+            // kdebug("rs_raise_softirq TIMER_SIRQ in HPET");
         }
         // 当时间到了，或进程发生切换时，刷新帧缓冲区
         if (clock() >= video_refresh_expire_jiffies || (video_last_refresh_pid != current_pcb->pid))
         {
-            kdebug("rs_raise_softirq VIDEO_REFRESH_SIRQ in HPET");
+            // kdebug("rs_raise_softirq VIDEO_REFRESH_SIRQ in HPET");
 
             rs_raise_softirq(VIDEO_REFRESH_SIRQ);
 

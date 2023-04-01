@@ -121,6 +121,7 @@ void system_initialize()
     irq_init();
 
     // softirq_init();
+    rs_softirq_init();
 
     current_pcb->cpu_id = 0;
     current_pcb->preempt_count = 0;

@@ -96,9 +96,9 @@ pub fn us_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
 pub extern "C" fn nano_sleep_c(
     sleep_time: *const timespec,
     rm_time: *mut timespec,
-) -> Result<i32, SystemError> {
+) -> i32 {
     if sleep_time == null_mut() {
-        return Err(SystemError::EINVAL);
+        return SystemError::EINVAL.to_posix_errno();
     }
     let slt_spec = TimeSpec {
         tv_sec: unsafe { *sleep_time }.tv_sec,
@@ -112,11 +112,11 @@ pub extern "C" fn nano_sleep_c(
                 unsafe { *rm_time }.tv_nsec = value.tv_nsec;
             }
             kdebug!("nano_sleep_c run successfully");
-            return Ok(0);
+            return 0;
         }
         Err(err) => {
             kdebug!("nano_sleep_c run failed");
-            return Err(err);
+            return err.to_posix_errno();
         }
     }
 }
@@ -129,7 +129,7 @@ pub extern "C" fn nano_sleep_c(
 ///
 /// @return Err(SystemError) 错误码
 #[no_mangle]
-pub extern "C" fn rs_us_sleep(usec: useconds_t) -> Result<i32, SystemError> {
+pub extern "C" fn rs_us_sleep(usec: useconds_t) -> i32 {
     let sleep_time = TimeSpec {
         tv_sec: (usec / 1000000) as i64,
         tv_nsec: ((usec % 1000000) * 1000) as i64,
@@ -137,11 +137,11 @@ pub extern "C" fn rs_us_sleep(usec: useconds_t) -> Result<i32, SystemError> {
     match us_sleep(sleep_time) {
         Ok(_) => {
             kdebug!("rs_us_sleep run successfully");
-            return Ok(0);
+            return 0;
         }
         Err(err) => {
             kdebug!("rs_us_sleep run failed");
-            return Err(err);
+            return err.to_posix_errno();
         }
     };
 }

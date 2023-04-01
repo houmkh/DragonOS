@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use alloc::{
     boxed::Box,
     collections::LinkedList,
@@ -10,7 +12,7 @@ use crate::{
         interrupt::{cli, sti},
         sched::sched,
     },
-    exception::softirq2::{SoftirqNumber, SoftirqVec, SOFTIRQ_VECTORS},
+    exception::softirq2::{softirq_vectors, SoftirqNumber, SoftirqVec},
     include::bindings::bindings::{process_control_block, process_wakeup, pt_regs, PROC_RUNNING},
     kdebug,
     libs::spinlock::SpinLock,
@@ -111,12 +113,41 @@ pub struct InnerTimer {
     self_ref: Weak<Timer>,
 }
 
-pub struct DoTimerSoftirq;
+#[derive(Debug)]
+pub struct DoTimerSoftirq {
+    running: AtomicBool,
+}
+
+impl DoTimerSoftirq {
+    pub fn new() -> Self {
+        return DoTimerSoftirq {
+            running: AtomicBool::new(false),
+        };
+    }
+
+    fn set_run(&self) -> bool {
+        let x = self
+            .running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
+        if x.is_ok() {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn clear_run(&self) {
+        self.running.store(false, Ordering::Release);
+    }
+}
 impl SoftirqVec for DoTimerSoftirq {
     fn run(&self) {
+        if self.set_run() == false {
+            return;
+        }
         // 最多只处理TIMER_RUN_CYCLE_THRESHOLD个计时器
         for _ in 0..TIMER_RUN_CYCLE_THRESHOLD {
-            kdebug!("DoTimerSoftirq run");
+            // kdebug!("DoTimerSoftirq run");
 
             let timer_list = &mut TIMER_LIST.lock();
 
@@ -132,11 +163,8 @@ impl SoftirqVec for DoTimerSoftirq {
                 timer.run();
             }
         }
-    }
-}
-impl DoTimerSoftirq {
-    pub fn new() -> DoTimerSoftirq {
-        return DoTimerSoftirq {};
+
+        self.clear_run();
     }
 }
 
@@ -144,7 +172,7 @@ impl DoTimerSoftirq {
 pub fn timer_init() {
     // FIXME 调用register_trap
     let do_timer_softirq = Arc::new(DoTimerSoftirq::new());
-    SOFTIRQ_VECTORS
+    softirq_vectors()
         .register_softirq(SoftirqNumber::TIMER, do_timer_softirq)
         .expect("Failed to register timer softirq");
     kdebug!("timer initiated successfully");
@@ -232,15 +260,15 @@ pub extern "C" fn sys_clock(_regs: *const pt_regs) -> u64 {
 
 // ====== 以下为给C提供的接口 ======
 #[no_mangle]
-pub extern "C" fn rs_schedule_timeout(timeout: i64) -> Result<i64, SystemError> {
+pub extern "C" fn rs_schedule_timeout(timeout: i64) -> i64 {
     match schedule_timeout(timeout) {
         Ok(v) => {
             kdebug!("rs_schedule_timeout run successfully");
-            return Ok(v);
+            return v;
         }
         Err(e) => {
             kdebug!("rs_schedule_timeout run failed");
-            return Err(e);
+            return e.to_posix_errno() as i64;
         }
     }
 }
@@ -261,10 +289,10 @@ pub extern "C" fn rs_timer_next_n_us_jiffies(expire_us: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn rs_timer_get_first_expire() -> Result<u64, SystemError> {
+pub extern "C" fn rs_timer_get_first_expire() -> i64{
     match timer_get_first_expire() {
-        Ok(v) => return Ok(v),
-        Err(e) => return Err(e),
+        Ok(v) => return v as i64,
+        Err(e) => return e.to_posix_errno() as i64,
     }
 }
 
