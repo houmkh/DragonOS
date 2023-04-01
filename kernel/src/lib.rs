@@ -39,7 +39,6 @@ extern crate alloc;
 extern crate bitflags;
 #[macro_use]
 extern crate lazy_static;
-
 extern crate num;
 #[macro_use]
 extern crate num_derive;
@@ -51,7 +50,7 @@ use mm::allocator::KernelAllocator;
 // <3>
 use crate::{
     arch::asm::current::current_pcb,
-    include::bindings::bindings::{process_do_exit, BLACK, GREEN},
+    include::bindings::bindings::{process_do_exit, BLACK, GREEN}, filesystem::vfs::ROOT_INODE,
 };
 
 // 声明全局的slab分配器
