@@ -43,6 +43,7 @@ pub fn nano_sleep(sleep_time: TimeSpec) -> Result<TimeSpec, SystemError> {
         });
     }
     // 创建定时器
+    kdebug!("create a WakeUpHelper");
     let handler: Box<WakeUpHelper> = WakeUpHelper::new(current_pcb());
     let timer: Arc<Timer> = Timer::new(
         handler,

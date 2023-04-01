@@ -3,7 +3,7 @@ use core::ptr::null_mut;
 use alloc::sync::Arc;
 
 use crate::{
-    exception::softirq2::{SoftirqNumber, SoftirqVec, softirq_vectors},
+    exception::softirq::{softirq_vectors, SoftirqNumber, SoftirqVec},
     include::bindings::bindings::video_refresh_framebuffer,
     kdebug,
 };

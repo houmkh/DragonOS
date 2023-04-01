@@ -12,7 +12,7 @@ use crate::{
         interrupt::{cli, sti},
         sched::sched,
     },
-    exception::softirq2::{softirq_vectors, SoftirqNumber, SoftirqVec},
+    exception::softirq::{softirq_vectors, SoftirqNumber, SoftirqVec},
     include::bindings::bindings::{process_control_block, process_wakeup, pt_regs, PROC_RUNNING},
     kdebug,
     libs::spinlock::SpinLock,
@@ -45,6 +45,7 @@ impl WakeUpHelper {
 
 impl TimerFunction for WakeUpHelper {
     fn run(&mut self) {
+        kdebug!("WakeUpHelper run");
         unsafe {
             process_wakeup(self.pcb);
         }
@@ -170,12 +171,12 @@ impl SoftirqVec for DoTimerSoftirq {
 
 /// @brief 初始化timer模块
 pub fn timer_init() {
-    // FIXME 调用register_trap
     let do_timer_softirq = Arc::new(DoTimerSoftirq::new());
     softirq_vectors()
         .register_softirq(SoftirqNumber::TIMER, do_timer_softirq)
         .expect("Failed to register timer softirq");
     kdebug!("timer initiated successfully");
+
 }
 
 /// 计算接下来n毫秒对应的定时器时间片
@@ -289,7 +290,7 @@ pub extern "C" fn rs_timer_next_n_us_jiffies(expire_us: u64) -> u64 {
 }
 
 #[no_mangle]
-pub extern "C" fn rs_timer_get_first_expire() -> i64{
+pub extern "C" fn rs_timer_get_first_expire() -> i64 {
     match timer_get_first_expire() {
         Ok(v) => return v as i64,
         Err(e) => return e.to_posix_errno() as i64,
