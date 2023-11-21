@@ -3,6 +3,7 @@ use alloc::{string::String, vec::Vec};
 use crate::{
     arch::{
         interrupt::TrapFrame,
+        ipc::signal::Signal,
         process::table::{USER_CS, USER_DS},
         CurrentIrqArch,
     },
@@ -10,6 +11,7 @@ use crate::{
     mm::ucontext::AddressSpace,
     process::{
         exec::{load_binary_file, ExecParam, ExecParamFlags},
+        ptrace::PtraceFlag,
         ProcessManager,
     },
     syscall::{Syscall, SystemError},
@@ -22,6 +24,10 @@ impl Syscall {
         envp: Vec<String>,
         regs: &mut TrapFrame,
     ) -> Result<(), SystemError> {
+        // TODO 判断是否是pt ptraced 给当前进程发送sigtrap
+        if ProcessManager::current_pcb().ptraced_get_status(PtraceFlag::PT_PTRACED) {
+            Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGTRAP as i32)?;
+        }
         // kdebug!(
         //     "tmp_rs_execve: path: {:?}, argv: {:?}, envp: {:?}\n",
         //     path,

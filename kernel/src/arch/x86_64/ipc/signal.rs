@@ -148,7 +148,8 @@ impl Signal {
             Signal::SIGINT => sig_terminate(self.clone()),
             Signal::SIGQUIT => sig_terminate_dump(self.clone()),
             Signal::SIGILL => sig_terminate_dump(self.clone()),
-            Signal::SIGTRAP => sig_terminate_dump(self.clone()),
+            //TODO sigtrap实现将进程停止，并发送sigchld给父进程
+            Signal::SIGTRAP => sig_trap(self.clone()),
             Signal::SIGABRT_OR_IOT => sig_terminate_dump(self.clone()),
             Signal::SIGBUS => sig_terminate_dump(self.clone()),
             Signal::SIGFPE => sig_terminate_dump(self.clone()),
@@ -676,4 +677,10 @@ fn sig_continue(sig: Signal) {
 /// 信号默认处理函数——忽略
 fn sig_ignore(_sig: Signal) {
     return;
+}
+
+fn sig_trap(sig: Signal) {
+    let pid = ProcessManager::current_pcb().basic().ppid();
+    Syscall::kill(pid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
+    sig_stop(Signal::SIGSTOP);
 }

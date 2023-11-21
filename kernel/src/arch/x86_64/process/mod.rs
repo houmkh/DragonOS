@@ -77,6 +77,8 @@ pub struct ArchPCBInfo {
 
     /// 浮点寄存器的状态
     fp_state: Option<FpState>,
+
+    temp_trapframe: Option<TrapFrame>,
 }
 
 #[allow(dead_code)]
@@ -107,6 +109,7 @@ impl ArchPCBInfo {
             fs: KERNEL_DS.bits(),
             gs: KERNEL_DS.bits(),
             fp_state: None,
+            temp_trapframe: None,
         };
 
         if kstack.is_some() {
@@ -213,6 +216,12 @@ impl ArchPCBInfo {
 
     pub fn fp_state_mut(&mut self) -> &mut Option<FpState> {
         &mut self.fp_state
+    }
+    pub fn store_trapframe(&mut self, trap_frame: &TrapFrame) {
+        self.temp_trapframe.replace(*trap_frame);
+    }
+    pub fn get_trapframe(&self) -> Option<TrapFrame> {
+        self.temp_trapframe.clone()
     }
 }
 

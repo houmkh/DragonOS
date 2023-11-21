@@ -13,7 +13,10 @@ use crate::{
     kerror,
     libs::rwlock::RwLockWriteGuard,
     mm::VirtAddr,
-    process::ProcessManager,
+    process::{
+        ptrace::{do_ptrace, PtraceRequest},
+        Pid, ProcessManager,
+    },
     syscall::{user_access::UserBufferReader, Syscall, SystemError},
     time::TimeSpec,
 };
@@ -748,6 +751,15 @@ impl Syscall {
         parent_inode.mknod(filename, mode, dev_t)?;
 
         return Ok(0);
+    }
+
+    pub fn sys_ptrace(
+        request: usize,
+        pid: usize,
+        addr: u64,
+        data: u64,
+    ) -> Result<usize, SystemError> {
+        do_ptrace(PtraceRequest::from(request), pid, addr, data)
     }
 }
 #[repr(C)]

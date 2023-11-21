@@ -43,7 +43,7 @@ use crate::{
     syscall::{Syscall, SystemError},
 };
 
-use self::kthread::WorkerPrivate;
+use self::{kthread::WorkerPrivate, ptrace::PtraceFlag};
 
 pub mod abi;
 pub mod c_adapter;
@@ -54,6 +54,7 @@ pub mod init;
 pub mod kthread;
 pub mod pid;
 pub mod process;
+pub mod ptrace;
 pub mod syscall;
 
 /// 系统中所有进程的pcb
@@ -290,6 +291,7 @@ impl ProcessManager {
                 );
             }
             // todo: 当信号机制重写后，这里需要向父进程发送SIGCHLD信号
+            Syscall::kill(current.basic().ppid(), Signal::SIGCHLD as i32);
         }
     }
 
@@ -481,11 +483,17 @@ pub struct ProcessControlBlock {
     /// 父进程指针
     parent_pcb: RwLock<Weak<ProcessControlBlock>>,
 
+    /// 当前父进程指针
+    cur_parent_pcb: RwLock<Weak<ProcessControlBlock>>,
+
     /// 子进程链表
     children: RwLock<HashMap<Pid, Arc<ProcessControlBlock>>>,
 
     /// 等待队列
     wait_queue: WaitQueue,
+
+    /// 跟踪标志位
+    ptraced: RwLock<PtraceFlag> ,
 }
 
 impl ProcessControlBlock {
@@ -533,6 +541,10 @@ impl ProcessControlBlock {
             .map(|p| Arc::downgrade(&p))
             .unwrap_or_else(|| Weak::new());
 
+        let cur_ppcb: Weak<ProcessControlBlock> = ProcessManager::find(ppid)
+            .map(|p| Arc::downgrade(&p))
+            .unwrap_or_else(|| Weak::new());
+
         let pcb = Self {
             pid,
             basic: basic_info,
@@ -545,8 +557,10 @@ impl ProcessControlBlock {
             sig_info: RwLock::new(ProcessSignalInfo::default()),
             sig_struct: SpinLock::new(SignalStruct::default()),
             parent_pcb: RwLock::new(ppcb),
+            cur_parent_pcb: RwLock::new(cur_ppcb),
             children: RwLock::new(HashMap::new()),
             wait_queue: WaitQueue::INIT,
+            ptraced: RwLock::new(PtraceFlag::empty()),
         };
 
         let pcb = Arc::new(pcb);
@@ -738,6 +752,14 @@ impl ProcessControlBlock {
     pub fn sig_struct_irq(&self) -> SpinLockGuard<SignalStruct> {
         self.sig_struct.lock_irqsave()
     }
+
+    pub fn ptraced_get_status(&self,flags:PtraceFlag) -> bool {
+        self.ptraced.read().contains(flags)
+    }
+
+    pub fn ptraced_insert_status(&self,flags:PtraceFlag){
+        self.ptraced.write().insert(flags);
+    }
 }
 
 impl Drop for ProcessControlBlock {
@@ -800,6 +822,10 @@ impl ProcessBasicInfo {
 
     pub fn ppid(&self) -> Pid {
         return self.ppid;
+    }
+
+    pub fn set_ppid(&mut self, ppid: Pid) {
+        self.ppid = ppid;
     }
 
     pub fn name(&self) -> &str {

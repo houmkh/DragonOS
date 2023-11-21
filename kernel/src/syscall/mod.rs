@@ -19,7 +19,7 @@ use crate::{
     libs::align::page_align_up,
     mm::{verify_area, MemoryManagementArch, VirtAddr},
     net::syscall::SockAddr,
-    process::Pid,
+    process::{ptrace::PtraceRequest, Pid},
     time::{
         syscall::{PosixTimeZone, PosixTimeval},
         TimeSpec,
@@ -376,6 +376,7 @@ pub const SYS_GETPGID: usize = 50;
 pub const SYS_FCNTL: usize = 51;
 pub const SYS_FTRUNCATE: usize = 52;
 pub const SYS_MKNOD: usize = 53;
+pub const SYS_TRACE: usize = 54;
 
 #[derive(Debug)]
 pub struct Syscall;
@@ -411,6 +412,7 @@ impl Syscall {
         args: &[usize],
         frame: &mut TrapFrame,
     ) -> Result<usize, SystemError> {
+        // TODO 判断是否被追踪 如果被追踪 则发送sigtrap给自己 并记录frame
         let r = match syscall_num {
             SYS_PUT_STRING => {
                 Self::put_string(args[0] as *const u8, args[1] as u32, args[2] as u32)
@@ -958,8 +960,17 @@ impl Syscall {
                 Self::mknod(path as *const i8, flags, DeviceNumber::from(dev_t))
             }
 
+            SYS_TRACE => {
+                let request = args[0];
+                let pid = args[1];
+                let addr = args[2] as u64;
+                let data: u64 = args[3] as u64;
+                Self::sys_ptrace(request, pid, addr, data)
+            }
             _ => panic!("Unsupported syscall ID: {}", syscall_num),
         };
+        // TODO 判断是否被追踪 如果被追踪 则发送sigtrap给自己 并记录frame
+
         return r;
     }
 
