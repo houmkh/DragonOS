@@ -1,3 +1,5 @@
+use system_error::SystemError;
+
 use crate::mm::{
     allocator::page_frame::{FrameAllocator, PageFrameCount, PageFrameUsage},
     page::PageFlags,
@@ -5,6 +7,7 @@ use crate::mm::{
 };
 
 pub mod bump;
+pub(super) mod init;
 
 pub type PageMapper = crate::mm::page::PageMapper<RiscV64MMArch, LockedFrameAllocator>;
 
@@ -78,8 +81,7 @@ impl MemoryManagementArch for RiscV64MMArch {
         todo!()
     }
 
-    fn setup_new_usermapper() -> Result<crate::mm::ucontext::UserMapper, crate::syscall::SystemError>
-    {
+    fn setup_new_usermapper() -> Result<crate::mm::ucontext::UserMapper, SystemError> {
         todo!()
     }
 }

@@ -5,6 +5,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
+use system_error::SystemError;
 
 use crate::{
     driver::base::{block::SeekFrom, device::DeviceNumber},
@@ -17,7 +18,7 @@ use crate::{
     },
     syscall::{
         user_access::{check_and_clone_cstr, UserBufferReader, UserBufferWriter},
-        Syscall, SystemError,
+        Syscall,
     },
     time::TimeSpec,
 };

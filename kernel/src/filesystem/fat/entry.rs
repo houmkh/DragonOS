@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 use core::{cmp::min, intrinsics::unlikely};
+use system_error::SystemError;
 
 use crate::{
     driver::base::block::{block_device::LBA_SIZE, SeekFrom},
     kwarn,
     libs::vec_cursor::VecCursor,
-    syscall::SystemError,
 };
 use alloc::{
     string::{String, ToString},
@@ -625,7 +625,6 @@ impl FATDir {
                 // todo: 设置创建、访问时间
                 dot_entry.flush(&fs, fs.cluster_bytes_offset(first_cluster) + offset)?;
 
-                drop(dot_entry);
                 // 偏移量加上一个目录项的长度
                 offset += FATRawDirEntry::DIR_ENTRY_LEN;
 

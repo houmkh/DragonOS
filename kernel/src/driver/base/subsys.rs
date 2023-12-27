@@ -3,22 +3,20 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use crate::libs::{
+    notifier::AtomicNotifierChain,
+    rwlock::{RwLock, RwLockReadGuard},
+    spinlock::SpinLock,
+};
 use alloc::{
     string::String,
     sync::{Arc, Weak},
     vec::Vec,
 };
-
-use crate::{
-    libs::{
-        notifier::AtomicNotifierChain,
-        rwlock::{RwLock, RwLockReadGuard},
-        spinlock::SpinLock,
-    },
-    syscall::SystemError,
-};
+use system_error::SystemError;
 
 use super::{
+    class::Class,
     device::{
         bus::{Bus, BusNotifyEvent},
         driver::Driver,
@@ -34,7 +32,9 @@ pub struct SubSysPrivate {
     subsys: Arc<KSet>,
     ksets: RwLock<SubSysKSets>,
     /// 指向拥有当前结构体的`dyn bus`对象的弱引用
-    bus: SpinLock<Weak<dyn Bus>>,
+    bus: SpinLock<Option<Weak<dyn Bus>>>,
+    /// 指向拥有当前结构体的`dyn class`对象的弱引用
+    class: SpinLock<Option<Weak<dyn Class>>>,
     drivers_autoprobe: AtomicBool,
     /// 当前总线上的所有设备
     devices: RwLock<Vec<Weak<dyn Device>>>,
@@ -64,7 +64,8 @@ impl SubSysKSets {
 impl SubSysPrivate {
     pub fn new(
         name: String,
-        bus: Weak<dyn Bus>,
+        bus: Option<Weak<dyn Bus>>,
+        class: Option<Weak<dyn Class>>,
         interfaces: &'static [&'static dyn SubSysInterface],
     ) -> Self {
         let subsys = KSet::new(name);
@@ -73,6 +74,7 @@ impl SubSysPrivate {
             ksets: RwLock::new(SubSysKSets::new()),
             drivers_autoprobe: AtomicBool::new(false),
             bus: SpinLock::new(bus),
+            class: SpinLock::new(class),
             devices: RwLock::new(Vec::new()),
             drivers: RwLock::new(Vec::new()),
             interfaces,
@@ -86,12 +88,22 @@ impl SubSysPrivate {
 
     #[inline]
     #[allow(dead_code)]
-    pub fn bus(&self) -> Weak<dyn Bus> {
+    pub fn bus(&self) -> Option<Weak<dyn Bus>> {
         return self.bus.lock().clone();
     }
 
-    pub fn set_bus(&self, bus: Weak<dyn Bus>) {
+    pub fn set_bus(&self, bus: Option<Weak<dyn Bus>>) {
         *self.bus.lock() = bus;
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    pub fn class(&self) -> Option<Weak<dyn Class>> {
+        return self.class.lock().clone();
+    }
+
+    pub fn set_class(&self, class: Option<Weak<dyn Class>>) {
+        *self.class.lock() = class;
     }
 
     pub fn devices(&self) -> RwLockReadGuard<Vec<Weak<dyn Device>>> {

@@ -1,4 +1,5 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
+use system_error::SystemError;
 
 use crate::{
     arch::{
@@ -14,7 +15,7 @@ use crate::{
         ptrace::{do_ptrace, PtraceFlag, PtraceRequest},
         ProcessControlBlock, ProcessManager,
     },
-    syscall::{user_access::UserBufferWriter, Syscall, SystemError},
+    syscall::{user_access::UserBufferWriter, Syscall},
 };
 
 impl Syscall {

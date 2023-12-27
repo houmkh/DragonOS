@@ -1,7 +1,6 @@
 use crate::libs::spinlock::{SpinLock, SpinLockGuard};
 use crate::mm::kernel_mapper::KernelMapper;
 use crate::process::ProcessManager;
-use crate::syscall::SystemError;
 use crate::{
     include::bindings::bindings::{PAGE_1G_SHIFT, PAGE_4K_SHIFT, PAGE_4K_SIZE},
     kdebug,
@@ -12,6 +11,7 @@ use alloc::{collections::LinkedList, vec::Vec};
 use core::mem;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
+use system_error::SystemError;
 
 use super::page::PageFlags;
 use super::{PhysAddr, VirtAddr};
@@ -354,7 +354,7 @@ impl MmioBuddyMemPool {
             // element 只会有一个元素
             let mut element: Vec<MmioBuddyAddrRegion> = list_guard
                 .list
-                .drain_filter(|x| x.vaddr == buddy_vaddr)
+                .extract_if(|x| x.vaddr == buddy_vaddr)
                 .collect();
             if element.len() == 1 {
                 list_guard.num_free -= 1;

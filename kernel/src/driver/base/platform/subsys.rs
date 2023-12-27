@@ -4,6 +4,7 @@ use alloc::{
 };
 use intertrait::cast::CastArc;
 
+use super::{platform_device::PlatformDevice, platform_driver::PlatformDriver};
 use crate::{
     driver::{
         acpi::acpi_manager,
@@ -17,10 +18,8 @@ use crate::{
         sysfs::{Attribute, AttributeGroup},
         vfs::syscall::ModeType,
     },
-    syscall::SystemError,
 };
-
-use super::{platform_device::PlatformDevice, platform_driver::PlatformDriver};
+use system_error::SystemError;
 
 #[derive(Debug)]
 pub struct PlatformBus {
@@ -30,10 +29,10 @@ pub struct PlatformBus {
 impl PlatformBus {
     pub fn new() -> Arc<Self> {
         let w: Weak<Self> = Weak::new();
-        let private = SubSysPrivate::new("platform".to_string(), w, &[]);
+        let private = SubSysPrivate::new("platform".to_string(), Some(w), None, &[]);
         let bus = Arc::new(Self { private });
         bus.subsystem()
-            .set_bus(Arc::downgrade(&(bus.clone() as Arc<dyn Bus>)));
+            .set_bus(Some(Arc::downgrade(&(bus.clone() as Arc<dyn Bus>))));
 
         return bus;
     }

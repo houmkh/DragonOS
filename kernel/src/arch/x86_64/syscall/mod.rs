@@ -13,9 +13,10 @@ use crate::{
     libs::align::SafeForZero,
     mm::VirtAddr,
     process::ProcessManager,
-    syscall::{Syscall, SystemError, SYS_SCHED},
+    syscall::{Syscall, SYS_SCHED},
 };
 use alloc::string::String;
+use system_error::SystemError;
 
 use super::{interrupt::TrapFrame, mm::barrier::mfence};
 
@@ -70,7 +71,11 @@ pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
     // kdebug!("syscall_flag = {:?}", syscall_flag);
     let syscall_num = frame.rax as usize;
     // 防止sys_sched由于超时无法退出导致的死锁
-    if syscall_num != SYS_SCHED {
+    if syscall_num == SYS_SCHED {
+        unsafe {
+            CurrentIrqArch::interrupt_disable();
+        }
+    } else {
         unsafe {
             CurrentIrqArch::interrupt_enable();
         }

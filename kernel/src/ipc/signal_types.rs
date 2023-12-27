@@ -1,6 +1,12 @@
-use core::{ffi::c_void, mem::size_of, sync::atomic::AtomicI64};
+use core::{
+    ffi::c_void,
+    mem::size_of,
+    ops::{Deref, DerefMut},
+    sync::atomic::AtomicI64,
+};
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
+use system_error::SystemError;
 
 use crate::{
     arch::{
@@ -10,7 +16,7 @@ use crate::{
     },
     mm::VirtAddr,
     process::Pid,
-    syscall::{user_access::UserBufferWriter, SystemError},
+    syscall::user_access::UserBufferWriter,
 };
 
 /// 用户态程序传入的SIG_DFL的值
@@ -54,13 +60,41 @@ pub const SIG_KERNEL_IGNORE_MASK: SigSet = Signal::into_sigset(Signal::SIGCONT)
 /// SignalStruct 在 pcb 中加锁
 #[derive(Debug)]
 pub struct SignalStruct {
+    inner: Box<InnerSignalStruct>,
+}
+
+#[derive(Debug)]
+pub struct InnerSignalStruct {
     pub cnt: AtomicI64,
     /// 如果对应linux，这部分会有一个引用计数，但是没发现在哪里有用到需要计算引用的地方，因此
     /// 暂时删掉，不然这个Arc会导致其他地方的代码十分丑陋
     pub handlers: [Sigaction; MAX_SIG_NUM as usize],
 }
 
-impl Default for SignalStruct {
+impl SignalStruct {
+    #[inline(never)]
+    pub fn new() -> Self {
+        Self {
+            inner: Box::new(InnerSignalStruct::default()),
+        }
+    }
+}
+
+impl Deref for SignalStruct {
+    type Target = InnerSignalStruct;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for SignalStruct {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl Default for InnerSignalStruct {
     fn default() -> Self {
         Self {
             cnt: Default::default(),
@@ -423,17 +457,8 @@ impl SigPending {
     /// @brief 从sigpending中删除mask中被置位的信号。也就是说，比如mask的第1位被置为1,那么就从sigqueue中删除所有signum为2的信号的信息。
     pub fn flush_by_mask(&mut self, mask: &SigSet) {
         // 定义过滤器，从sigqueue中删除mask中被置位的信号
-        let filter = |x: &mut SigInfo| {
-            if mask.contains(SigSet::from_bits_truncate(x.sig_no as u64)) {
-                return true;
-            }
-            return false;
-        };
-        let filter_result: Vec<SigInfo> = self.queue.q.drain_filter(filter).collect();
-        // 回收这些siginfo
-        for x in filter_result {
-            drop(x)
-        }
+        let filter = |x: &SigInfo| !mask.contains(SigSet::from_bits_truncate(x.sig_no as u64));
+        self.queue.q.retain(filter);
     }
 }
 
@@ -496,7 +521,7 @@ impl SigQueue {
             return false;
         };
         // 从sigqueue中过滤出结果
-        let mut filter_result: Vec<SigInfo> = self.q.drain_filter(filter).collect();
+        let mut filter_result: Vec<SigInfo> = self.q.extract_if(filter).collect();
         // 筛选出的结果不能大于1个
         assert!(filter_result.len() <= 1);
 

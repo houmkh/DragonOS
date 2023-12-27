@@ -2,6 +2,7 @@ use super::{_port, hba::HbaCmdTable, virt_2_phys};
 use crate::driver::base::block::block_device::{BlockDevice, BlockId};
 use crate::driver::base::block::disk_info::Partition;
 use crate::driver::base::block::SeekFrom;
+use crate::driver::base::class::Class;
 use crate::driver::base::device::bus::Bus;
 
 use crate::driver::base::device::driver::Driver;
@@ -17,7 +18,6 @@ use crate::kdebug;
 use crate::libs::rwlock::{RwLockReadGuard, RwLockWriteGuard};
 use crate::libs::{spinlock::SpinLock, vec_cursor::VecCursor};
 use crate::mm::{phys_2_virt, verify_area, VirtAddr};
-use crate::syscall::SystemError;
 use crate::{
     driver::disk::ahci::hba::{
         FisRegH2D, FisType, HbaCmdHeader, ATA_CMD_READ_DMA_EXT, ATA_CMD_WRITE_DMA_EXT,
@@ -25,6 +25,7 @@ use crate::{
     },
     kerror,
 };
+use system_error::SystemError;
 
 use alloc::sync::Weak;
 use alloc::{string::String, sync::Arc, vec::Vec};
@@ -527,6 +528,10 @@ impl Device for LockedAhciDisk {
     }
 
     fn state_synced(&self) -> bool {
+        todo!()
+    }
+
+    fn set_class(&self, _class: Option<Arc<dyn Class>>) {
         todo!()
     }
 }

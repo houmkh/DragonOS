@@ -1,6 +1,7 @@
 use core::sync::atomic::compiler_fence;
 
 use alloc::sync::Arc;
+use system_error::SystemError;
 
 use crate::{
     arch::ipc::signal::{SigCode, SigFlags, SigSet, Signal},
@@ -8,7 +9,6 @@ use crate::{
     kwarn,
     libs::spinlock::SpinLockGuard,
     process::{pid::PidType, Pid, ProcessControlBlock, ProcessFlags, ProcessManager},
-    syscall::SystemError,
 };
 
 use super::signal_types::{
@@ -141,12 +141,7 @@ impl Signal {
     /// @param pt siginfo结构体中，pid字段代表的含义
     fn complete_signal(&self, pcb: Arc<ProcessControlBlock>, pt: PidType) {
         // kdebug!("complete_signal");
-        // todo: 将信号产生的消息通知到正在监听这个信号的进程（引入signalfd之后，在这里调用signalfd_notify)
-        // 将这个信号加到目标进程的sig_pending中
-        pcb.sig_info_mut()
-            .sig_pending_mut()
-            .signal_mut()
-            .insert(self.clone().into());
+
         compiler_fence(core::sync::atomic::Ordering::SeqCst);
         // ===== 寻找需要wakeup的目标进程 =====
         // 备注：由于当前没有进程组的概念，每个进程只有1个对应的线程，因此不需要通知进程组内的每个进程。
@@ -154,11 +149,17 @@ impl Signal {
 
         // let _signal = pcb.sig_struct();
 
-        let mut _target: Option<Arc<ProcessControlBlock>> = None;
+        let target_pcb: Option<Arc<ProcessControlBlock>>;
 
         // 判断目标进程是否想接收这个信号
         if self.wants_signal(pcb.clone()) {
-            _target = Some(pcb.clone());
+            // todo: 将信号产生的消息通知到正在监听这个信号的进程（引入signalfd之后，在这里调用signalfd_notify)
+            // 将这个信号加到目标进程的sig_pending中
+            pcb.sig_info_mut()
+                .sig_pending_mut()
+                .signal_mut()
+                .insert(self.clone().into());
+            target_pcb = Some(pcb.clone());
         } else if pt == PidType::PID {
             /*
              * There is just one thread and it does not need to be woken.
@@ -176,9 +177,9 @@ impl Signal {
         // TODO:引入进程组后，在这里挑选一个进程来唤醒，让它执行相应的操作。
         compiler_fence(core::sync::atomic::Ordering::SeqCst);
         // TODO: 到这里，信号已经被放置在共享的pending队列中，我们在这里把目标进程唤醒。
-        if _target.is_some() {
-            let guard = pcb.sig_struct();
-            signal_wake_up(pcb.clone(), guard, *self == Signal::SIGKILL);
+        if let Some(target_pcb) = target_pcb {
+            let guard = target_pcb.sig_struct();
+            signal_wake_up(target_pcb.clone(), guard, *self == Signal::SIGKILL);
         }
     }
 
@@ -200,8 +201,8 @@ impl Signal {
         if *self == Signal::SIGKILL {
             return true;
         }
-
-        if pcb.sched_info().state().is_blocked() {
+        let state = pcb.sched_info().inner_lock_read_irqsave().state();
+        if state.is_blocked() && (state.is_blocked_interruptable() == false) {
             return false;
         }
 
@@ -209,7 +210,6 @@ impl Signal {
 
         // 检查目标进程是否有信号正在等待处理，如果是，则返回false，否则返回true
         if pcb.sig_info().sig_pending().signal().bits() == 0 {
-            assert!(pcb.sig_info().sig_pending().queue().q.is_empty());
             return true;
         } else {
             return false;
@@ -285,7 +285,7 @@ fn signal_wake_up(pcb: Arc<ProcessControlBlock>, _guard: SpinLockGuard<SignalStr
     // 如果不是 fatal 的就只唤醒 stop 的进程来响应
     // kdebug!("signal_wake_up");
     // 如果目标进程已经在运行，则发起一个ipi，使得它陷入内核
-    let state = pcb.sched_info().state();
+    let state = pcb.sched_info().inner_lock_read_irqsave().state();
     let mut wakeup_ok = true;
     if state.is_blocked_interruptable() {
         ProcessManager::wakeup(&pcb).unwrap_or_else(|e| {
@@ -335,7 +335,7 @@ fn recalc_sigpending() {
 pub fn flush_signal_handlers(pcb: Arc<ProcessControlBlock>, force_default: bool) {
     compiler_fence(core::sync::atomic::Ordering::SeqCst);
     // kdebug!("hand=0x{:018x}", hand as *const sighand_struct as usize);
-    let actions = &mut pcb.sig_struct().handlers;
+    let actions = &mut pcb.sig_struct_irqsave().handlers;
 
     for sigaction in actions.iter_mut() {
         if force_default || !sigaction.is_ignore() {
@@ -434,7 +434,7 @@ pub fn set_current_sig_blocked(new_set: &mut SigSet) {
         return;
     }
 
-    let guard = pcb.sig_struct_irq();
+    let guard = pcb.sig_struct_irqsave();
     // todo: 当一个进程有多个线程后，在这里需要设置每个线程的block字段，并且 retarget_shared_pending（虽然我还没搞明白linux这部分是干啥的）
 
     // 设置当前进程的sig blocked

@@ -4,8 +4,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::{boxed::Box, sync::Arc};
-
 use crate::{
     arch::MMArch,
     driver::tty::serial::serial8250::send_to_default_serial8250_port,
@@ -24,9 +22,12 @@ use crate::{
         allocator::page_frame::PageFrameCount, kernel_mapper::KernelMapper,
         no_init::pseudo_map_phys, page::PageFlags, MemoryManagementArch, PhysAddr, VirtAddr,
     },
-    syscall::SystemError,
     time::timer::{Timer, TimerFunction},
 };
+use alloc::{boxed::Box, sync::Arc};
+use system_error::SystemError;
+
+pub mod fbdev;
 
 static mut __MAMAGER: Option<VideoRefreshManager> = None;
 
@@ -170,11 +171,14 @@ impl VideoRefreshManager {
         return self.device_buffer.read();
     }
 
-    /**
-     * @brief 初始化显示驱动
-     *
-     * @return int
-     */
+    /// 在riscv64平台下暂时不支持
+    #[cfg(target_arch = "riscv64")]
+    pub unsafe fn video_init() -> Result<(), SystemError> {
+        return Err(SystemError::ENOSYS);
+    }
+
+    /// 此函数用于初始化显示驱动，为后续的图形输出做好准备。
+    #[cfg(not(target_arch = "riscv64"))]
     pub unsafe fn video_init() -> Result<(), SystemError> {
         static INIT: AtomicBool = AtomicBool::new(false);
 

@@ -8,6 +8,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use system_error::SystemError;
 
 use crate::{
     arch::mm::LockedFrameAllocator,
@@ -22,14 +23,13 @@ use crate::{
     },
     mm::allocator::page_frame::FrameAllocator,
     process::{Pid, ProcessManager},
-    syscall::SystemError,
     time::TimeSpec,
 };
 
 use super::vfs::{
     file::{FileMode, FilePrivateData},
     syscall::ModeType,
-    FileSystem, FsInfo, IndexNode, InodeId, Metadata, PollStatus,
+    FileSystem, FsInfo, IndexNode, InodeId, Metadata,
 };
 
 /// @brief 进程文件类型
@@ -115,7 +115,8 @@ impl ProcFSInode {
     /// @brief 去除Vec中所有的\0,并在结尾添加\0
     #[inline]
     fn trim_string(&self, data: &mut Vec<u8>) {
-        data.drain_filter(|x: &mut u8| *x == 0);
+        data.retain(|x| *x != 0);
+
         data.push(0);
     }
     // todo:其他数据获取函数实现
@@ -145,7 +146,7 @@ impl ProcFSInode {
         );
 
         let sched_info_guard = pcb.sched_info();
-        let state = sched_info_guard.state();
+        let state = sched_info_guard.inner_lock_read_irqsave().state();
         let cpu_id = sched_info_guard
             .on_cpu()
             .map(|cpu| cpu as i32)
@@ -153,8 +154,6 @@ impl ProcFSInode {
 
         let priority = sched_info_guard.priority();
         let vrtime = sched_info_guard.virtual_runtime();
-
-        drop(sched_info_guard);
 
         pdata.append(&mut format!("\nState:\t{:?}", state).as_bytes().to_owned());
         pdata.append(
@@ -420,15 +419,9 @@ impl IndexNode for LockedProcFSInode {
         if let FileType::Dir = guard.metadata.file_type {
             return Ok(());
         }
-        // 获取数据信息
-        let private_data = match data {
-            FilePrivateData::Procfs(p) => p,
-            _ => {
-                panic!("ProcFS: FilePrivateData mismatch!");
-            }
-        };
-        // 释放资源
-        drop(private_data);
+        // 释放data
+        *data = FilePrivateData::Procfs(ProcfsFilePrivateData::new());
+
         return Ok(());
     }
 
@@ -488,18 +481,6 @@ impl IndexNode for LockedProcFSInode {
         _data: &mut FilePrivateData,
     ) -> Result<usize, SystemError> {
         return Err(SystemError::EOPNOTSUPP_OR_ENOTSUP);
-    }
-
-    fn poll(&self) -> Result<PollStatus, SystemError> {
-        // 加锁
-        let inode: SpinLockGuard<ProcFSInode> = self.0.lock();
-
-        // 检查当前inode是否为一个文件夹，如果是的话，就返回错误
-        if inode.metadata.file_type == FileType::Dir {
-            return Err(SystemError::EISDIR);
-        }
-
-        return Ok(PollStatus::READ);
     }
 
     fn fs(&self) -> Arc<dyn FileSystem> {

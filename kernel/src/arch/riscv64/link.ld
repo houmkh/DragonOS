@@ -10,21 +10,23 @@ ENTRY(_start)
 
 SECTIONS
 {
-	//KERNEL_VMA = 0xffffffc000000000;
-	KERNEL_VMA = 0;
-	. = 0;
-	
-	.boot.text :
+	KERNEL_VMA = 0xffffffc000000000;
+	. = 0x1000000;
+	. += KERNEL_VMA;
+	. = ALIGN(4096);
+	boot_text_start_pa = .;
+	.boot.text : AT(boot_text_start_pa - KERNEL_VMA)
 	{
-		KEEP(*(.multiboot_header))
+		KEEP(*(.bootstrap))
 		*(.bootstrap)
-		*(.bootstrap.code64)
-		*(.bootstrap.data)
+		*(.bootstrap.*)
+		. = ALIGN(4096);
+		*(.initial_pgtable_section)
 		. = ALIGN(4096);
 	}
 
-	. += KERNEL_VMA;
-	. = ALIGN(32768);
+
+	. = ALIGN(4096);
 	text_start_pa = .;
 	.text (text_start_pa): AT(text_start_pa - KERNEL_VMA)
 	{
@@ -45,7 +47,8 @@ SECTIONS
 		_data = .;
 		*(.data)
 		*(.data.*)
-		
+		*(.got.plt)
+   		*(.got)
 		_edata = .;
 	}
 

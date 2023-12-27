@@ -1,19 +1,16 @@
+use crate::driver::base::{
+    device::{
+        bus::{bus_manager, Bus},
+        driver::Driver,
+        Device,
+    },
+    subsys::SubSysPrivate,
+};
 use alloc::{
     string::{String, ToString},
-    sync::{Arc, Weak},
+    sync::Arc,
 };
-
-use crate::{
-    driver::base::{
-        device::{
-            bus::{bus_manager, Bus},
-            driver::Driver,
-            Device,
-        },
-        subsys::SubSysPrivate,
-    },
-    syscall::SystemError,
-};
+use system_error::SystemError;
 
 use super::AcpiManager;
 
@@ -53,12 +50,11 @@ pub(super) struct AcpiBus {
 
 impl AcpiBus {
     pub fn new() -> Arc<Self> {
-        let default_weak: Weak<Self> = Weak::new();
         let bus = Arc::new(Self {
-            private: SubSysPrivate::new("acpi".to_string(), default_weak, &[]),
+            private: SubSysPrivate::new("acpi".to_string(), None, None, &[]),
         });
         bus.subsystem()
-            .set_bus(Arc::downgrade(&(bus.clone() as Arc<dyn Bus>)));
+            .set_bus(Some(Arc::downgrade(&(bus.clone() as Arc<dyn Bus>))));
         return bus;
     }
 }
