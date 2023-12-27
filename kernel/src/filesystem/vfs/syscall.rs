@@ -13,7 +13,6 @@ use crate::{
     libs::rwlock::RwLockWriteGuard,
     mm::{verify_area, VirtAddr},
     process::{
-        ptrace::{do_ptrace, PtraceRequest},
         Pid, ProcessManager,
     },
     syscall::{
@@ -859,16 +858,7 @@ impl Syscall {
         let data = iovecs.gather();
 
         Self::write(fd, &data)
-    
-    pub fn sys_ptrace(
-        request: usize,
-        pid: usize,
-        addr: u64,
-        data: u64,
-    ) -> Result<usize, SystemError> {
-        do_ptrace(PtraceRequest::from(request), pid, addr, data)
     }
-}
 
     pub fn readv(fd: i32, iov: usize, count: usize) -> Result<usize, SystemError> {
         // IoVecs会进行用户态检验

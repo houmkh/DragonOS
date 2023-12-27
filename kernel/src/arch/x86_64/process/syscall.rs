@@ -11,7 +11,7 @@ use crate::{
     mm::ucontext::AddressSpace,
     process::{
         exec::{load_binary_file, ExecParam, ExecParamFlags},
-        ptrace::PtraceFlag,
+        ptrace::{do_ptrace, PtraceFlag, PtraceRequest},
         ProcessControlBlock, ProcessManager,
     },
     syscall::{user_access::UserBufferWriter, Syscall, SystemError},
@@ -183,6 +183,14 @@ impl Syscall {
     #[allow(dead_code)]
     pub fn do_arch_prctl_common(_option: usize, _arg2: usize) -> Result<usize, SystemError> {
         todo!("do_arch_prctl_common not unimplemented");
+    }
+    pub fn do_strace(
+        request: usize,
+        proc: usize,
+        addr: u64,
+        data: u64,
+    ) -> Result<usize, SystemError> {
+        do_ptrace(PtraceRequest::from(request), proc, addr, data)
     }
 }
 

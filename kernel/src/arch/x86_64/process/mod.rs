@@ -262,6 +262,7 @@ impl ArchPCBInfo {
             gs: self.gs.clone(),
             gsdata: self.gsdata.clone(),
             fp_state: self.fp_state,
+            temp_trapframe: self.temp_trapframe,
         }
     }
 

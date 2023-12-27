@@ -1,4 +1,6 @@
 use alloc::sync::{Arc, Weak};
+use smoltcp::wire::IpProtocol;
+use x86::current::syscall;
 
 use crate::{
     arch::{interrupt::TrapFrame, ipc::signal::Signal},
@@ -86,18 +88,27 @@ bitflags! {
 /// 让child成为parent的子进程
 ///
 fn ptrace_link(child: Arc<ProcessControlBlock>, parent: Arc<ProcessControlBlock>) {
+    kdebug!("enter ptrace_link");
     let ppid: Pid = parent.pid();
+    let pid = child.pid();
+    kdebug!("parent = {:?}, child = {:?}", ppid, pid);
     child.basic_mut().set_ppid(ppid);
     let mut new_parent = child.cur_parent_pcb.write();
     (*new_parent) = Arc::downgrade(&parent);
+    kdebug!("exit ptrace_link");
 }
 
 fn ptrace_traceme() {
+    kdebug!("enter ptrace_traceme");
+
     // TODO 错误处理
     // 判断当前进程是否已经在被跟踪
     let cur_pcb = ProcessManager::current_pcb();
+    let pid = cur_pcb.pid();
+    kdebug!("i'm {:?}", pid);
     let ptrace = &mut cur_pcb.ptraced.write();
     if !ptrace.contains(PtraceFlag::PT_PTRACED) {
+        kdebug!("i'm not be traced");
         let cur_pcb = ProcessManager::current_pcb();
         let temp_pcb = cur_pcb.clone();
         let parent = &temp_pcb.parent_pcb.read();
@@ -105,28 +116,47 @@ fn ptrace_traceme() {
         drop(parent);
         // TODO 要判断父结点是否已经调用exit_ptrace
         if p_pcb.is_some() {
+            kdebug!("link parent and child");
             let pcb = p_pcb.unwrap();
             if pcb.sched_info().state().is_exited() {
+                kdebug!("parent is exited");
                 return;
             }
             // 将当前进程标记为被追踪状态
             (*ptrace).insert(PtraceFlag::PT_PTRACED);
             // 将当前进程成为ptracer的子进程
+            drop(ptrace);
             ptrace_link(cur_pcb, pcb);
         }
     }
+    kdebug!("exit ptrace_traceme");
+
+    // let guard = unsafe { CurrentIrqArch::save_and_disable_irq() };
+    // ProcessManager::mark_sleep(true).unwrap_or_else(|e| {
+    //     kerror!(
+    //         "sleep error :{:?},failed to sleep process :{:?}, with signal :{:?}",
+    //         e,
+    //         ProcessManager::current_pcb(),
+    //         sig
+    //     );
+    // });
+    // drop(guard);
+    // Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGCHLD);
+    // kdebug!("send sigchld to myself");
 }
 /// 将指定的进程附加在当前进程上
 fn ptrace_attach(request: PtraceRequest, pid: Pid) -> Result<(), SystemError> {
+    kdebug!("enter ptrace_attach");
+
     // 判断当前进程与被跟踪进程是否相同
     if pid == ProcessManager::current_pcb().pid() {
         return Err(SystemError::EPERM);
     }
-    let op_pcb = ProcessManager::find(pid);
+    let op_pcb: Option<Arc<ProcessControlBlock>> = ProcessManager::find(pid);
     if op_pcb.is_none() {
         return Err(SystemError::ESRCH);
     }
-    let pcb = op_pcb.unwrap();
+    let pcb: Arc<ProcessControlBlock> = op_pcb.unwrap();
     // 判断要跟踪的进程是否已退出或已被跟踪
     if pcb.flags().contains(ProcessFlags::EXITING)
         || pcb.ptraced.read().contains(PtraceFlag::PT_PTRACED)
@@ -149,11 +179,14 @@ fn ptrace_attach(request: PtraceRequest, pid: Pid) -> Result<(), SystemError> {
     // 将pcb连接到当前进程，当前进程就是tracer
     ptrace_link(pcb.clone(), ProcessManager::current_pcb());
     // 给pcb发送sigstop信号，暂停pcb
-    match Syscall::kill(pid, Signal::SIGSTOP as i32) {
-        Ok(_) => todo!(),
-        Err(e) => return Err(e),
+    if let Err(e) = Syscall::kill(pid, Signal::SIGSTOP as i32) {
+        return Err(e);
     }
+
     // 将task子进程设置为停止状态
+
+    kdebug!("exit ptrace_attach");
+    Ok(())
 }
 /// 揭开ptracer和ptracee之间的关系
 fn ptrace_detach(pid: Pid) -> Result<(), SystemError> {

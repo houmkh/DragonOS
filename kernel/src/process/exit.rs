@@ -162,12 +162,16 @@ fn do_wait(kwo: &mut KernelWaitOption) -> Result<usize, SystemError> {
                     unsafe { pcb.wait_queue.sleep_without_schedule() };
                 }
             }
+            drop(rd_childen);
             drop(irq_guard);
             sched();
         } else {
             // todo: 对于pgid的处理
             kwarn!("kernel_wait4: currently not support {:?}", kwo.pid_type);
             return Err(SystemError::EINVAL);
+        }
+        if ProcessManager::current_pcb().pid() == Pid(4){
+            kdebug!("parent in waiting")
         }
     }
 

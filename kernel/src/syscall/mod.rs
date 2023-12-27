@@ -4,11 +4,13 @@ use core::{
 };
 
 use crate::{
-    arch::syscall::nr::*,
+    arch::{ipc::signal::Signal, syscall::nr::*},
     libs::{futex::constant::FutexFlag, rand::GRandFlags},
     process::{
         fork::KernelCloneArgs,
+        ptrace::PtraceFlag,
         resource::{RLimit64, RUsage},
+        ProcessManager,
     },
 };
 
@@ -28,7 +30,7 @@ use crate::{
     libs::align::page_align_up,
     mm::{verify_area, MemoryManagementArch, VirtAddr},
     net::syscall::SockAddr,
-    process::{fork::CloneFlags, {ptrace::PtraceRequest, Pid}},
+    process::{fork::CloneFlags, Pid},
     time::{
         syscall::{PosixTimeZone, PosixTimeval},
         TimeSpec,
@@ -385,6 +387,16 @@ impl Syscall {
         frame: &mut TrapFrame,
     ) -> Result<usize, SystemError> {
         // TODO 判断是否被追踪 如果被追踪 则发送sigtrap给自己 并记录frame
+        let pcb = ProcessManager::current_pcb();
+        if pcb.ptraced_get_status(PtraceFlag::PT_PTRACED)
+            && !(syscall_num == SYS_KILL && args[1] == Signal::SIGTRAP.into())
+            && syscall_num != SYS_PTRACE
+        {
+            let pid = pcb.pid();
+            kdebug!("syscall = {:?}, send sigtrap to {:?}", syscall_num, pid);
+            Syscall::kill(pid, Signal::SIGTRAP as i32).expect("fail to send sigtrap");
+        }
+        drop(pcb);
         let r = match syscall_num {
             SYS_PUT_STRING => {
                 Self::put_string(args[0] as *const u8, args[1] as u32, args[2] as u32)
@@ -986,13 +998,258 @@ impl Syscall {
                 let flags = args[1];
                 let dev_t = args[2];
                 let flags: ModeType = ModeType::from_bits_truncate(flags as u32);
-                Self::mknod(path as *const i8, flags, DeviceNumber::from(dev_t))
+                Self::mknod(
+                    path as *const i8,
+                    flags,
+                    crate::driver::base::device::DeviceNumber::from(dev_t),
+                )
+            }
+
+            SYS_CLONE => {
+                let parent_tid = VirtAddr::new(args[2]);
+                let child_tid = VirtAddr::new(args[3]);
+
+                // 地址校验
+                verify_area(parent_tid, core::mem::size_of::<i32>())?;
+                verify_area(child_tid, core::mem::size_of::<i32>())?;
+
+                let mut clone_args = KernelCloneArgs::new();
+                clone_args.flags = CloneFlags::from_bits_truncate(args[0] as u64);
+                clone_args.stack = args[1];
+                clone_args.parent_tid = parent_tid;
+                clone_args.child_tid = child_tid;
+                clone_args.tls = args[4];
+                Self::clone(frame, clone_args)
+            }
+
+            SYS_FUTEX => {
+                let uaddr = VirtAddr::new(args[0]);
+                let operation = FutexFlag::from_bits(args[1] as u32).ok_or(SystemError::ENOSYS)?;
+                let val = args[2] as u32;
+                let utime = args[3];
+                let uaddr2 = VirtAddr::new(args[4]);
+                let val3 = args[5] as u32;
+
+                verify_area(uaddr, core::mem::size_of::<u32>())?;
+                verify_area(uaddr2, core::mem::size_of::<u32>())?;
+
+                let mut timespec = None;
+                if utime != 0 && operation.contains(FutexFlag::FLAGS_HAS_TIMEOUT) {
+                    let reader = UserBufferReader::new(
+                        utime as *const TimeSpec,
+                        core::mem::size_of::<TimeSpec>(),
+                        true,
+                    )?;
+
+                    timespec = Some(reader.read_one_from_user::<TimeSpec>(0)?.clone());
+                }
+
+                Self::do_futex(uaddr, operation, val, timespec, uaddr2, utime as u32, val3)
+            }
+
+            SYS_READV => Self::readv(args[0] as i32, args[1], args[2]),
+            SYS_WRITEV => Self::writev(args[0] as i32, args[1], args[2]),
+
+            SYS_SET_TID_ADDRESS => Self::set_tid_address(args[0]),
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_LSTAT => {
+                let path: &CStr = unsafe { CStr::from_ptr(args[0] as *const c_char) };
+                let path: Result<&str, core::str::Utf8Error> = path.to_str();
+                let res = if path.is_err() {
+                    Err(SystemError::EINVAL)
+                } else {
+                    let path: &str = path.unwrap();
+                    let kstat = args[1] as *mut PosixKstat;
+                    let vaddr = VirtAddr::new(kstat as usize);
+                    match verify_area(vaddr, core::mem::size_of::<PosixKstat>()) {
+                        Ok(_) => Self::lstat(path, kstat),
+                        Err(e) => Err(e),
+                    }
+                };
+
+                res
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_STAT => {
+                let path: &CStr = unsafe { CStr::from_ptr(args[0] as *const c_char) };
+                let path: Result<&str, core::str::Utf8Error> = path.to_str();
+                let res = if path.is_err() {
+                    Err(SystemError::EINVAL)
+                } else {
+                    let path: &str = path.unwrap();
+                    let kstat = args[1] as *mut PosixKstat;
+                    let vaddr = VirtAddr::new(kstat as usize);
+                    match verify_area(vaddr, core::mem::size_of::<PosixKstat>()) {
+                        Ok(_) => Self::stat(path, kstat),
+                        Err(e) => Err(e),
+                    }
+                };
+
+                res
+            }
+
+            // 目前为了适配musl-libc,以下系统调用先这样写着
+            SYS_GETRANDOM => {
+                let flags = GRandFlags::from_bits(args[2] as u8).ok_or(SystemError::EINVAL)?;
+                Self::get_random(args[0] as *mut u8, args[1], flags)
+            }
+
+            SYS_SOCKETPAIR => {
+                unimplemented!()
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_POLL => {
+                kwarn!("SYS_POLL has not yet been implemented");
+                Ok(0)
+            }
+
+            SYS_RT_SIGPROCMASK => {
+                kinfo!(
+                    "{:?} SYS_RT_SIGPROCMASK",
+                    ProcessManager::current_pcb().pid()
+                );
+                kwarn!("SYS_RT_SIGPROCMASK has not yet been implemented");
+                Ok(0)
+            }
+
+            SYS_TKILL => {
+                kwarn!("SYS_TKILL has not yet been implemented");
+                Ok(0)
+            }
+
+            SYS_SIGALTSTACK => {
+                kwarn!("SYS_SIGALTSTACK has not yet been implemented");
+                Ok(0)
+            }
+
+            SYS_EXIT_GROUP => {
+                kinfo!("{:?} SYS_EXIT_GROUP", ProcessManager::current_pcb().pid());
+                kwarn!("SYS_EXIT_GROUP has not yet been implemented");
+                Ok(0)
+            }
+
+            SYS_MADVISE => {
+                kwarn!("SYS_MADVISE has not yet been implemented");
+                Ok(0)
+            }
+            SYS_GETTID => Self::gettid().map(|tid| tid.into()),
+            SYS_GETUID => Self::getuid().map(|uid| uid.into()),
+            SYS_SYSLOG => {
+                kwarn!("SYS_SYSLOG has not yet been implemented");
+                Ok(0)
+            }
+            SYS_GETGID => Self::getgid().map(|gid| gid.into()),
+            SYS_SETUID => {
+                kwarn!("SYS_SETUID has not yet been implemented");
+                Ok(0)
+            }
+            SYS_SETGID => {
+                kwarn!("SYS_SETGID has not yet been implemented");
+                Ok(0)
+            }
+            SYS_GETEUID => Self::geteuid().map(|euid| euid.into()),
+            SYS_GETEGID => Self::getegid().map(|egid| egid.into()),
+            SYS_GETRUSAGE => {
+                let who = args[0] as c_int;
+                let rusage = args[1] as *mut RUsage;
+                Self::get_rusage(who, rusage)
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_READLINK => {
+                let path = args[0] as *const u8;
+                let buf = args[1] as *mut u8;
+                let bufsiz = args[2] as usize;
+                Self::readlink(path, buf, bufsiz)
+            }
+
+            SYS_READLINKAT => {
+                let dirfd = args[0] as i32;
+                let pathname = args[1] as *const u8;
+                let buf = args[2] as *mut u8;
+                let bufsiz = args[3] as usize;
+                Self::readlink_at(dirfd, pathname, buf, bufsiz)
+            }
+
+            SYS_PRLIMIT64 => {
+                let pid = args[0];
+                let pid = Pid::new(pid);
+                let resource = args[1];
+                let new_limit = args[2] as *const RLimit64;
+                let old_limit = args[3] as *mut RLimit64;
+
+                Self::prlimit64(pid, resource, new_limit, old_limit)
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_ACCESS => {
+                let pathname = args[0] as *const u8;
+                let mode = args[1] as u32;
+                Self::access(pathname, mode)
+            }
+
+            SYS_FACCESSAT => {
+                let dirfd = args[0] as i32;
+                let pathname = args[1] as *const u8;
+                let mode = args[2] as u32;
+                Self::faccessat2(dirfd, pathname, mode, 0)
+            }
+
+            SYS_FACCESSAT2 => {
+                let dirfd = args[0] as i32;
+                let pathname = args[1] as *const u8;
+                let mode = args[2] as u32;
+                let flags = args[3] as u32;
+                Self::faccessat2(dirfd, pathname, mode, flags)
+            }
+
+            SYS_CLOCK_GETTIME => {
+                let clockid = args[0] as i32;
+                let timespec = args[1] as *mut TimeSpec;
+                Self::clock_gettime(clockid, timespec)
+            }
+
+            SYS_SYSINFO => {
+                let info = args[0] as *mut SysInfo;
+                Self::sysinfo(info)
+            }
+
+            SYS_UMASK => {
+                let mask = args[0] as u32;
+                Self::umask(mask)
+            }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_CHMOD => {
+                let pathname = args[0] as *const u8;
+                let mode = args[1] as u32;
+                Self::chmod(pathname, mode)
+            }
+            SYS_FCHMOD => {
+                let fd = args[0] as i32;
+                let mode = args[1] as u32;
+                Self::fchmod(fd, mode)
+            }
+            SYS_FCHMODAT => {
+                let dirfd = args[0] as i32;
+                let pathname = args[1] as *const u8;
+                let mode = args[2] as u32;
+                Self::fchmodat(dirfd, pathname, mode)
+            }
+
+            SYS_PTRACE => {
+                let request = args[0];
+                let pid = args[1];
+                let addr = args[2] as u64;
+                let data = args[3] as u64;
+                Self::do_strace(request, pid, addr, data)
             }
 
             _ => panic!("Unsupported syscall ID: {}", syscall_num),
         };
-
-        // TODO 判断是否被追踪 如果被追踪 则发送sigtrap给自己 并记录frame
 
         return r;
     }

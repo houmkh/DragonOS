@@ -2,13 +2,14 @@ use core::ffi::c_void;
 
 use crate::{
     arch::{
-        ipc::signal::X86_64SignalArch,
+        ipc::signal::{Signal, X86_64SignalArch},
         syscall::nr::{SYS_ARCH_PRCTL, SYS_RT_SIGRETURN},
         CurrentIrqArch,
     },
     exception::InterruptArch,
     include::bindings::bindings::set_system_trap_gate,
     ipc::signal_types::SignalArch,
+    kdebug,
     libs::align::SafeForZero,
     mm::VirtAddr,
     process::ProcessManager,
@@ -64,6 +65,9 @@ macro_rules! syscall_return {
 
 #[no_mangle]
 pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
+    let syscall_flag = frame.rcx as usize;
+        // TODO 重新开一个pr
+    // kdebug!("syscall_flag = {:?}", syscall_flag);
     let syscall_num = frame.rax as usize;
     // 防止sys_sched由于超时无法退出导致的死锁
     if syscall_num != SYS_SCHED {
@@ -71,7 +75,9 @@ pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
             CurrentIrqArch::interrupt_enable();
         }
     }
-
+    if syscall_flag == 0x1 {
+        unsafe { X86_64SignalArch::do_signal(frame) };
+    }
     let args = [
         frame.rdi as usize,
         frame.rsi as usize,
@@ -118,6 +124,7 @@ pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
         frame,
         show
     );
+
 }
 
 /// 系统调用初始化

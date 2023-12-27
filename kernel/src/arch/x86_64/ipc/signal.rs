@@ -13,9 +13,9 @@ use crate::{
         signal::set_current_sig_blocked,
         signal_types::{SaHandlerType, SigInfo, Sigaction, SigactionType, SignalArch},
     },
-    kerror,
+    kdebug, kerror,
     mm::MemoryManagementArch,
-    process::ProcessManager,
+    process::{Pid, ProcessManager},
     syscall::{user_access::UserBufferWriter, Syscall, SystemError},
 };
 
@@ -141,6 +141,11 @@ impl Signal {
 
     /// 调用信号的默认处理函数
     pub fn handle_default(&self) {
+        kdebug!(
+            "{:?} get {:?}",
+            ProcessManager::current_pcb().pid(),
+            self.clone()
+        );
         match self {
             Signal::INVALID => {
                 kerror!("attempting to handler an Invalid");
@@ -728,11 +733,29 @@ fn sig_continue(sig: Signal) {
 }
 /// 信号默认处理函数——忽略
 fn sig_ignore(_sig: Signal) {
+    if _sig == Signal::SIGCHLD {
+        let pid = ProcessManager::current_pcb().pid();
+        kdebug!("{:?} handled sigchld", pid);
+        // ProcessManager::wakeup_stop(&ProcessManager::current_pcb());
+        // Syscall::kill(Pid(5), Signal::SIGCHLD as i32).expect("fail to notice current parent");
+    }
     return;
 }
 
-fn sig_trap(sig: Signal) {
-    let pid = ProcessManager::current_pcb().basic().ppid();
-    Syscall::kill(pid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
+fn sig_trap(_sig: Signal) {
+    let ppid = ProcessManager::current_pcb().basic().ppid();
+    kdebug!(
+        "{:?} send sigchld to {:?}",
+        ProcessManager::current_pcb().pid(),
+        ppid
+    );
+    Syscall::kill(ppid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
+    kdebug!(
+        "child had lock count = {:?}",
+        ProcessManager::current_pcb().preempt_count()
+    );
+
     sig_stop(Signal::SIGSTOP);
+
+    kdebug!("handle sigtrap sucessful");
 }
