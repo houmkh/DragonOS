@@ -133,6 +133,7 @@ __entry_err_code_before_gs_check_1:
     jne __entry_err_code_after_gs_check_1
     swapgs
 
+
 __entry_err_code_after_gs_check_1:
     popq %rcx
 
@@ -371,7 +372,7 @@ ENTRY(syscall_64)
     movq FUNC(%rsp), %rdx
 
     movq %rsp, %rdi // 把栈指针装入rdi，作为函数的第一个的参数
-
+    movq $0x1, %rcx
     callq *%rdx //调用服务程序
 
     cli
