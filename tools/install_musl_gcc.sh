@@ -11,7 +11,7 @@ MUSL_GCC_X86_64_DOWNLOAD_URL="https://mirrors.dragonos.org.cn/pub/third_party/to
 MUSL_GCC_RISCV64_DOWNLOAD_URL="https://mirrors.dragonos.org.cn/pub/third_party/toolchain/gcc/${MUSL_GCC_RISCV64_TAR}"
 
 
-INSTALL_POS="$HOME/opt/"
+INSTALL_POS="$HOME/opt"
 
 get_shell_rc_file()
 {
@@ -46,7 +46,7 @@ if [ ! -n "$(which x86_64-linux-musl-gcc)" ] || [ ! -n "$(which x86_64-linux-mus
     echo "下载完成"
     echo "开始解压x86_64-linux-musl-gcc"
     tar xvf $MUSL_GCC_X86_64_TAR -C $INSTALL_POS || exit 1
-    echo "PATH=\$PATH:$INSTALL_POS/x86_64-linux-musl-cross-gcc-${MUSL_GCC_VERSION}-${MUSL_GCC_DATE}/bin" >> $SHELL_RC
+    echo "PATH=\$PATH:$INSTALL_POS/x86_64-linux-musl-cross-gcc-${MUSL_GCC_VERSION}/bin" >> $SHELL_RC
     echo "安装完成"
     echo "开始清理x86_64-linux-musl-gcc的下载缓存"
     rm -rf $MUSL_GCC_X86_64_TAR || exit 1
