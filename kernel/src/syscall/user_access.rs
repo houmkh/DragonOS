@@ -172,6 +172,10 @@ impl<'a> UserBufferReader<'a> {
         });
     }
 
+    pub fn size(&self) -> usize {
+        return self.buffer.len();
+    }
+
     /// 从用户空间读取数据(到变量中)
     ///
     /// @param offset 字节偏移量
@@ -217,6 +221,17 @@ impl<'a> UserBufferReader<'a> {
         let data = self.convert_one_with_offset::<T>(&self.buffer, offset)?;
         dst.clone_from(data);
         return Ok(());
+    }
+
+    /// 把用户空间的数据转换成指定类型的切片
+    ///
+    /// ## 参数
+    ///
+    /// - `offset`：字节偏移量
+    pub fn buffer<T>(&self, offset: usize) -> Result<&[T], SystemError> {
+        Ok(self
+            .convert_with_offset::<T>(self.buffer, offset)
+            .map_err(|_| SystemError::EINVAL)?)
     }
 
     fn convert_with_offset<T>(&self, src: &[u8], offset: usize) -> Result<&[T], SystemError> {
@@ -266,6 +281,10 @@ impl<'a> UserBufferWriter<'a> {
         });
     }
 
+    pub fn size(&self) -> usize {
+        return self.buffer.len();
+    }
+
     /// 从指定地址写入数据到用户空间
     ///
     /// @param data 要写入的数据地址
@@ -274,7 +293,7 @@ impl<'a> UserBufferWriter<'a> {
     ///
     pub fn copy_to_user<T: core::marker::Copy>(
         &'a mut self,
-        src: &'a [T],
+        src: &[T],
         offset: usize,
     ) -> Result<usize, SystemError> {
         let dst = Self::convert_with_offset(self.buffer, offset)?;
@@ -290,7 +309,7 @@ impl<'a> UserBufferWriter<'a> {
     ///
     pub fn copy_one_to_user<T: core::marker::Copy>(
         &'a mut self,
-        src: &'a T,
+        src: &T,
         offset: usize,
     ) -> Result<(), SystemError> {
         let dst = Self::convert_one_with_offset::<T>(self.buffer, offset)?;

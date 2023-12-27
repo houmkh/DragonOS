@@ -9,8 +9,8 @@ use crate::{
         file::{File, FileMode},
         syscall::{IoVec, IoVecs},
     },
-    include::bindings::bindings::verify_area,
     libs::spinlock::SpinLockGuard,
+    mm::{verify_area, VirtAddr},
     net::socket::{AddressFamily, SOL_SOCKET},
     process::ProcessManager,
     syscall::{Syscall, SystemError},
@@ -20,6 +20,10 @@ use super::{
     socket::{PosixSocketType, RawSocket, SocketInode, SocketOptions, TcpSocket, UdpSocket},
     Endpoint, Protocol, ShutdownType, Socket,
 };
+
+/// Flags for socket, socketpair, accept4
+const SOCK_CLOEXEC: FileMode = FileMode::O_CLOEXEC;
+const SOCK_NONBLOCK: FileMode = FileMode::O_NONBLOCK;
 
 impl Syscall {
     /// @brief sys_socket系统调用的实际执行函数
@@ -173,7 +177,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let mut socket = socket.inner();
+        let mut socket = unsafe { socket.inner_no_preempt() };
         // kdebug!("connect to {:?}...", endpoint);
         socket.connect(endpoint)?;
         return Ok(0);
@@ -191,7 +195,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let mut socket = socket.inner();
+        let mut socket = unsafe { socket.inner_no_preempt() };
         socket.bind(endpoint)?;
         return Ok(0);
     }
@@ -221,7 +225,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let socket = socket.inner();
+        let socket = unsafe { socket.inner_no_preempt() };
         return socket.write(buf, endpoint);
     }
 
@@ -244,7 +248,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let socket = socket.inner();
+        let socket = unsafe { socket.inner_no_preempt() };
 
         let (n, endpoint) = socket.read(buf);
         drop(socket);
@@ -275,7 +279,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let socket = socket.inner();
+        let socket = unsafe { socket.inner_no_preempt() };
 
         let mut buf = iovs.new_buf(true);
         // 从socket中读取数据
@@ -304,7 +308,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let mut socket = socket.inner();
+        let mut socket = unsafe { socket.inner_no_preempt() };
         socket.listen(backlog)?;
         return Ok(0);
     }
@@ -319,7 +323,7 @@ impl Syscall {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
-        let socket = socket.inner();
+        let socket = unsafe { socket.inner_no_preempt() };
         socket.shutdown(ShutdownType::try_from(how as i32)?)?;
         return Ok(0);
     }
@@ -332,11 +336,55 @@ impl Syscall {
     ///
     /// @return 成功返回新的文件描述符，失败返回错误码
     pub fn accept(fd: usize, addr: *mut SockAddr, addrlen: *mut u32) -> Result<usize, SystemError> {
+        return Self::do_accept(fd, addr, addrlen, 0);
+    }
+
+    /// sys_accept4 - accept a connection on a socket
+    ///
+    ///
+    /// If flags is 0, then accept4() is the same as accept().  The
+    ///    following values can be bitwise ORed in flags to obtain different
+    ///    behavior:
+    ///
+    /// - SOCK_NONBLOCK
+    ///     Set the O_NONBLOCK file status flag on the open file
+    ///     description (see open(2)) referred to by the new file
+    ///     descriptor.  Using this flag saves extra calls to fcntl(2)
+    ///     to achieve the same result.
+    ///
+    /// - SOCK_CLOEXEC
+    ///     Set the close-on-exec (FD_CLOEXEC) flag on the new file
+    ///     descriptor.  See the description of the O_CLOEXEC flag in
+    ///     open(2) for reasons why this may be useful.
+    pub fn accept4(
+        fd: usize,
+        addr: *mut SockAddr,
+        addrlen: *mut u32,
+        mut flags: u32,
+    ) -> Result<usize, SystemError> {
+        // 如果flags不合法，返回错误
+        if (flags & (!(SOCK_CLOEXEC | SOCK_NONBLOCK)).bits()) != 0 {
+            return Err(SystemError::EINVAL);
+        }
+
+        if SOCK_NONBLOCK != FileMode::O_NONBLOCK && ((flags & SOCK_NONBLOCK.bits()) != 0) {
+            flags = (flags & !SOCK_NONBLOCK.bits()) | FileMode::O_NONBLOCK.bits();
+        }
+
+        return Self::do_accept(fd, addr, addrlen, flags);
+    }
+
+    fn do_accept(
+        fd: usize,
+        addr: *mut SockAddr,
+        addrlen: *mut u32,
+        flags: u32,
+    ) -> Result<usize, SystemError> {
         let socket: Arc<SocketInode> = ProcessManager::current_pcb()
             .get_socket(fd as i32)
             .ok_or(SystemError::EBADF)?;
         // kdebug!("accept: socket={:?}", socket);
-        let mut socket = socket.inner();
+        let mut socket = unsafe { socket.inner_no_preempt() };
         // 从socket中接收连接
         let (new_socket, remote_endpoint) = socket.accept()?;
         drop(socket);
@@ -344,10 +392,19 @@ impl Syscall {
         // kdebug!("accept: new_socket={:?}", new_socket);
         // Insert the new socket into the file descriptor vector
         let new_socket: Arc<SocketInode> = SocketInode::new(new_socket);
+
+        let mut file_mode = FileMode::O_RDWR;
+        if flags & FileMode::O_NONBLOCK.bits() != 0 {
+            file_mode |= FileMode::O_NONBLOCK;
+        }
+        if flags & FileMode::O_CLOEXEC.bits() != 0 {
+            file_mode |= FileMode::O_CLOEXEC;
+        }
+
         let new_fd = ProcessManager::current_pcb()
             .fd_table()
             .write()
-            .alloc_fd(File::new(new_socket, FileMode::O_RDWR)?, None)?;
+            .alloc_fd(File::new(new_socket, file_mode)?, None)?;
         // kdebug!("accept: new_fd={}", new_fd);
         if !addr.is_null() {
             // kdebug!("accept: write remote_endpoint to user");
@@ -482,15 +539,11 @@ pub union SockAddr {
 impl SockAddr {
     /// @brief 把用户传入的SockAddr转换为Endpoint结构体
     pub fn to_endpoint(addr: *const SockAddr, len: usize) -> Result<Endpoint, SystemError> {
-        if unsafe {
-            verify_area(
-                addr as usize as u64,
-                core::mem::size_of::<SockAddr>() as u64,
-            )
-        } == false
-        {
-            return Err(SystemError::EFAULT);
-        }
+        verify_area(
+            VirtAddr::new(addr as usize),
+            core::mem::size_of::<SockAddr>(),
+        )
+        .map_err(|_| SystemError::EFAULT)?;
 
         let addr = unsafe { addr.as_ref() }.ok_or(SystemError::EFAULT)?;
         if len < addr.len()? {
@@ -554,14 +607,19 @@ impl SockAddr {
         if addr.is_null() || addr_len.is_null() {
             return Ok(0);
         }
+
         // 检查用户传入的地址是否合法
-        if !verify_area(
-            addr as usize as u64,
-            core::mem::size_of::<SockAddr>() as u64,
-        ) || !verify_area(addr_len as usize as u64, core::mem::size_of::<u32>() as u64)
-        {
-            return Err(SystemError::EFAULT);
-        }
+        verify_area(
+            VirtAddr::new(addr as usize),
+            core::mem::size_of::<SockAddr>(),
+        )
+        .map_err(|_| SystemError::EFAULT)?;
+
+        verify_area(
+            VirtAddr::new(addr_len as usize),
+            core::mem::size_of::<u32>(),
+        )
+        .map_err(|_| SystemError::EFAULT)?;
 
         let to_write = min(self.len()?, *addr_len as usize);
         if to_write > 0 {

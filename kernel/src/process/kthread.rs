@@ -249,15 +249,18 @@ impl KernelThreadMechanism {
             KernelThreadClosure::EmptyClosure((Box::new(initial_kernel_thread), ())),
             "init".to_string(),
         );
-        let irq_guard = unsafe { CurrentIrqArch::save_and_disable_irq() };
+
+        let irq_guard: crate::exception::IrqFlagsGuard =
+            unsafe { CurrentIrqArch::save_and_disable_irq() };
         // 由于当前是pid=0的idle进程,而__inner_create要求当前是kthread,所以先临时设置为kthread
         ProcessManager::current_pcb()
             .flags
-            .lock()
+            .get_mut()
             .insert(ProcessFlags::KTHREAD);
         create_info
             .set_to_mark_sleep(false)
             .expect("Failed to set to_mark_sleep");
+
         KernelThreadMechanism::__inner_create(
             &create_info,
             CloneFlags::CLONE_VM | CloneFlags::CLONE_SIGNAL,
@@ -266,8 +269,9 @@ impl KernelThreadMechanism {
 
         ProcessManager::current_pcb()
             .flags
-            .lock()
+            .get_mut()
             .remove(ProcessFlags::KTHREAD);
+
         drop(irq_guard);
         kinfo!("Initializing kernel thread mechanism stage1 complete");
     }
@@ -282,9 +286,11 @@ impl KernelThreadMechanism {
             // 初始化kthreadd
             let closure = KernelThreadClosure::EmptyClosure((Box::new(Self::kthread_daemon), ()));
             let info = KernelThreadCreateInfo::new(closure, "kthreadd".to_string());
-            let kthreadd_pid: Pid =
-                Self::__inner_create(&info, CloneFlags::CLONE_FS | CloneFlags::CLONE_SIGNAL)
-                    .expect("Failed to create kthread daemon");
+            let kthreadd_pid: Pid = Self::__inner_create(
+                &info,
+                CloneFlags::CLONE_VM | CloneFlags::CLONE_FS | CloneFlags::CLONE_SIGNAL,
+            )
+            .expect("Failed to create kthread daemon");
 
             let pcb = ProcessManager::find(kthreadd_pid).unwrap();
             ProcessManager::wakeup(&pcb).expect("Failed to wakeup kthread daemon");

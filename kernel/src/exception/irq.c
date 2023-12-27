@@ -5,7 +5,7 @@
 #if _INTR_8259A_
 #include <driver/interrupt/8259A/8259A.h>
 #else
-#include <driver/interrupt/apic/apic.h>
+#include <arch/x86_64/driver/apic/apic.h>
 #endif
 
 #include "gate.h"
@@ -13,10 +13,18 @@
 #include <common/printk.h>
 #include <common/string.h>
 #include <mm/slab.h>
+#include <arch/arch.h>
 extern void ignore_int();
 
 #pragma GCC push_options
 #pragma GCC optimize("O0")
+
+// 定义IRQ处理函数的名字格式：IRQ+中断号+interrupt
+#define IRQ_NAME2(name1) name1##interrupt(void)
+#define IRQ_NAME(number) IRQ_NAME2(IRQ##number)
+
+#if ARCH(I386) || ARCH(X86_64)
+
 // 保存函数调用现场的寄存器
 #define SAVE_ALL_REGS       \
     "cld; \n\t"             \
@@ -45,9 +53,7 @@ extern void ignore_int();
     "movq %rdx, %ds; \n\t"  \
     "movq %rdx, %es; \n\t"
 
-// 定义IRQ处理函数的名字格式：IRQ+中断号+interrupt
-#define IRQ_NAME2(name1) name1##interrupt(void)
-#define IRQ_NAME(number) IRQ_NAME2(IRQ##number)
+
 
 // 构造中断entry
 // 为了复用返回函数的代码，需要压入一个错误码0
@@ -60,7 +66,15 @@ extern void ignore_int();
                                          "pushq %rax \n\t"                                         \
                                          "movq	$" #number ",	%rsi			\n\t"                         \
                                          "jmp do_IRQ    \n\t");
-
+#elif ARCH(riscv)
+#define Build_IRQ(number)                                                                          \
+    void IRQ_NAME(number);                                                                         \
+    __asm__(SYMBOL_NAME_STR(IRQ) #number "interrupt:   \n\t"                                     \
+                                        "loopirq_"#number":\n\t"\
+                                         "j loopirq_"#number"\n\t");
+#else
+#define Build_IRQ(number)  ()
+#endif
 // 构造中断入口
 Build_IRQ(0x20);
 Build_IRQ(0x21);
@@ -87,9 +101,10 @@ Build_IRQ(0x35);
 Build_IRQ(0x36);
 Build_IRQ(0x37);
 Build_IRQ(0x38);
+Build_IRQ(0x39);
 
 // 初始化中断数组
-void (*interrupt_table[25])(void) = {
+void (*interrupt_table[IRQ_NUM])(void) = {
     IRQ0x20interrupt,
     IRQ0x21interrupt,
     IRQ0x22interrupt,
@@ -115,6 +130,7 @@ void (*interrupt_table[25])(void) = {
     IRQ0x36interrupt,
     IRQ0x37interrupt,
     IRQ0x38interrupt,
+    IRQ0x39interrupt,
 };
 
 /**
@@ -238,7 +254,7 @@ int irq_unregister(ul irq_num)
     if (p->irq_name)
         kfree(p->irq_name);
     p->irq_name = NULL;
-    p->parameter = NULL;
+    p->parameter = (ul)NULL;
     p->flags = 0;
     p->handler = NULL;
 
@@ -254,8 +270,10 @@ void irq_init()
     init_8259A();
 #else
 
+#if ARCH(I386) || ARCH(X86_64)
     memset((void *)interrupt_desc, 0, sizeof(irq_desc_t) * IRQ_NUM);
     apic_init();
+#endif
 
 #endif
 }

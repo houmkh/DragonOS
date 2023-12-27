@@ -1,5 +1,3 @@
-use core::mem::MaybeUninit;
-
 use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::{
@@ -19,6 +17,7 @@ use super::{Dirent, FileType, IndexNode, InodeId, Metadata, SpecialNodeData};
 
 /// 文件私有信息的枚举类型
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum FilePrivateData {
     /// 管道文件私有信息
     Pipefs(PipeFsPrivateData),
@@ -45,45 +44,49 @@ bitflags! {
     /// 与Linux 5.19.10的uapi/asm-generic/fcntl.h相同
     /// https://opengrok.ringotek.cn/xref/linux-5.19.10/tools/include/uapi/asm-generic/fcntl.h#19
     pub struct FileMode: u32{
-    /* File access modes for `open' and `fcntl'.  */
-    /// Open Read-only
-    const O_RDONLY = 0o0;
-    /// Open Write-only
-    const O_WRONLY = 0o1;
-    /// Open read/write
-    const O_RDWR = 0o2;
-    /// Mask for file access modes
-    const O_ACCMODE = 0o00000003;
+        /* File access modes for `open' and `fcntl'.  */
+        /// Open Read-only
+        const O_RDONLY = 0o0;
+        /// Open Write-only
+        const O_WRONLY = 0o1;
+        /// Open read/write
+        const O_RDWR = 0o2;
+        /// Mask for file access modes
+        const O_ACCMODE = 0o00000003;
 
-    /* Bits OR'd into the second argument to open.  */
-    /// Create file if it does not exist
-    const O_CREAT = 0o00000100;
-    /// Fail if file already exists
-    const O_EXCL = 0o00000200;
-    /// Do not assign controlling terminal
-    const O_NOCTTY = 0o00000400;
-    /// 文件存在且是普通文件，并以O_RDWR或O_WRONLY打开，则它会被清空
-    const O_TRUNC = 0o00001000;
-    /// 文件指针会被移动到文件末尾
-    const O_APPEND = 0o00002000;
-    /// 非阻塞式IO模式
-    const O_NONBLOCK = 0o00004000;
-    /// 每次write都等待物理I/O完成，但是如果写操作不影响读取刚写入的数据，则不等待文件属性更新
-    const O_DSYNC = 0o00010000;
-    /// fcntl, for BSD compatibility
-    const FASYNC = 0o00020000;
-    /* direct disk access hint */
-    const O_DIRECT = 0o00040000;
-    const O_LARGEFILE = 0o00100000;
-    /// 打开的必须是一个目录
-    const O_DIRECTORY = 0o00200000;
-    /// Do not follow symbolic links
-    const O_NOFOLLOW = 0o00400000;
-    const O_NOATIME = 0o01000000;
-    /// set close_on_exec
-    const O_CLOEXEC = 0o02000000;
-    /// 每次write都等到物理I/O完成，包括write引起的文件属性的更新
-    const O_SYNC = 0o04000000;
+        /* Bits OR'd into the second argument to open.  */
+        /// Create file if it does not exist
+        const O_CREAT = 0o00000100;
+        /// Fail if file already exists
+        const O_EXCL = 0o00000200;
+        /// Do not assign controlling terminal
+        const O_NOCTTY = 0o00000400;
+        /// 文件存在且是普通文件，并以O_RDWR或O_WRONLY打开，则它会被清空
+        const O_TRUNC = 0o00001000;
+        /// 文件指针会被移动到文件末尾
+        const O_APPEND = 0o00002000;
+        /// 非阻塞式IO模式
+        const O_NONBLOCK = 0o00004000;
+        /// 每次write都等待物理I/O完成，但是如果写操作不影响读取刚写入的数据，则不等待文件属性更新
+        const O_DSYNC = 0o00010000;
+        /// fcntl, for BSD compatibility
+        const FASYNC = 0o00020000;
+        /* direct disk access hint */
+        const O_DIRECT = 0o00040000;
+        const O_LARGEFILE = 0o00100000;
+        /// 打开的必须是一个目录
+        const O_DIRECTORY = 0o00200000;
+        /// Do not follow symbolic links
+        const O_NOFOLLOW = 0o00400000;
+        const O_NOATIME = 0o01000000;
+        /// set close_on_exec
+        const O_CLOEXEC = 0o02000000;
+        /// 每次write都等到物理I/O完成，包括write引起的文件属性的更新
+        const O_SYNC = 0o04000000;
+
+        const O_PATH = 0o10000000;
+
+        const O_PATH_FLAGS = Self::O_DIRECTORY.bits|Self::O_NOFOLLOW.bits|Self::O_CLOEXEC.bits|Self::O_PATH.bits;
     }
 }
 
@@ -136,6 +139,7 @@ impl File {
         };
         // kdebug!("inode:{:?}",f.inode);
         f.inode.open(&mut f.private_data, &mode)?;
+
         return Ok(f);
     }
 
@@ -158,7 +162,6 @@ impl File {
         if self.offset > self.inode.metadata()?.size as usize {
             return Ok(0);
         }
-
         let len = self
             .inode
             .read_at(self.offset, len, buf, &mut self.private_data)?;
@@ -198,6 +201,7 @@ impl File {
     }
 
     /// @brief 根据inode号获取子目录项的名字
+    #[allow(dead_code)]
     pub fn get_entry_name(&self, ino: InodeId) -> Result<String, SystemError> {
         return self.inode.get_entry_name(ino);
     }
@@ -268,15 +272,18 @@ impl File {
 
         // 如果偏移量为0
         if self.offset == 0 {
+            // 通过list更新readdir_subdirs_name
             self.readdir_subdirs_name = inode.list()?;
             self.readdir_subdirs_name.sort();
         }
         // kdebug!("sub_entries={sub_entries:?}");
-        if self.readdir_subdirs_name.is_empty() {
+
+        // 已经读到末尾
+        if self.offset == self.readdir_subdirs_name.len() {
             self.offset = 0;
             return Ok(0);
         }
-        let name: String = self.readdir_subdirs_name.remove(0);
+        let name = &self.readdir_subdirs_name[self.offset];
         let sub_inode: Arc<dyn IndexNode> = match inode.find(&name) {
             Ok(i) => i,
             Err(e) => {
@@ -289,16 +296,19 @@ impl File {
 
         let name_bytes: &[u8] = name.as_bytes();
 
-        self.offset += 1;
-        dirent.d_ino = sub_inode.metadata().unwrap().inode_id.into() as u64;
-        dirent.d_type = sub_inode.metadata().unwrap().file_type.get_file_type_num() as u8;
         // 根据posix的规定，dirent中的d_name是一个不定长的数组，因此需要unsafe来拷贝数据
         unsafe {
             let ptr = &mut dirent.d_name as *mut u8;
+
             let buf: &mut [u8] =
-                ::core::slice::from_raw_parts_mut::<'static, u8>(ptr, name_bytes.len());
-            buf.copy_from_slice(name_bytes);
+                ::core::slice::from_raw_parts_mut::<'static, u8>(ptr, name_bytes.len() + 1);
+            buf[0..name_bytes.len()].copy_from_slice(name_bytes);
+            buf[name_bytes.len()] = 0;
         }
+
+        self.offset += 1;
+        dirent.d_ino = sub_inode.metadata().unwrap().inode_id.into() as u64;
+        dirent.d_type = sub_inode.metadata().unwrap().file_type.get_file_type_num() as u8;
 
         // 计算dirent结构体的大小
         let size = (name_bytes.len() + ::core::mem::size_of::<Dirent>()
@@ -407,28 +417,16 @@ impl Drop for File {
 #[derive(Debug)]
 pub struct FileDescriptorVec {
     /// 当前进程打开的文件描述符
-    fds: [Option<Arc<SpinLock<File>>>; FileDescriptorVec::PROCESS_MAX_FD],
+    fds: Vec<Option<Arc<SpinLock<File>>>>,
 }
 
 impl FileDescriptorVec {
-    pub const PROCESS_MAX_FD: usize = 32;
+    pub const PROCESS_MAX_FD: usize = 1024;
 
+    #[inline(never)]
     pub fn new() -> FileDescriptorVec {
-        // 先声明一个未初始化的数组
-        let mut data: [MaybeUninit<Option<Arc<SpinLock<File>>>>;
-            FileDescriptorVec::PROCESS_MAX_FD] = unsafe { MaybeUninit::uninit().assume_init() };
-
-        // 逐个把每个元素初始化为None
-        for i in 0..FileDescriptorVec::PROCESS_MAX_FD {
-            data[i] = MaybeUninit::new(None);
-        }
-        // 由于一切都初始化完毕，因此将未初始化的类型强制转换为已经初始化的类型
-        let data: [Option<Arc<SpinLock<File>>>; FileDescriptorVec::PROCESS_MAX_FD] = unsafe {
-            core::mem::transmute::<
-                _,
-                [Option<Arc<SpinLock<File>>>; FileDescriptorVec::PROCESS_MAX_FD],
-            >(data)
-        };
+        let mut data = Vec::with_capacity(FileDescriptorVec::PROCESS_MAX_FD);
+        data.resize(FileDescriptorVec::PROCESS_MAX_FD, None);
 
         // 初始化文件描述符数组结构体
         return FileDescriptorVec { fds: data };
@@ -529,6 +527,7 @@ impl FileDescriptorVec {
         return Ok(());
     }
 
+    #[allow(dead_code)]
     pub fn iter(&self) -> FileDescriptorIterator {
         return FileDescriptorIterator::new(self);
     }

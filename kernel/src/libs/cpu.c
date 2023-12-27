@@ -30,6 +30,9 @@ uint Cpu_max_linear_addrline_size;
 uint64_t Cpu_tsc_freq = 0;
 
 struct cpu_core_info_t cpu_core_info[MAX_CPU_NUM];
+
+#if ARCH(I386) || ARCH(X86_64)
+
 void cpu_init(void)
 {
     // 获取处理器制造商信息
@@ -101,31 +104,6 @@ void cpu_cpuid(uint32_t mop, uint32_t sop, uint32_t *eax, uint32_t *ebx, uint32_
                          : "memory");
 }
 
-/**
- * @brief 获取当前cpu核心晶振频率（是一个Write-on-box的值）
- *
- * hint: 某些cpu无法提供该数据，返回值为0
- * @return uint32_t 当前cpu核心晶振频率
- */
-uint32_t cpu_get_core_crysral_freq()
-{
-    uint32_t a = 0, b = 0, c = 0, d = 0;
-
-    // cpu_cpuid(0x15, 0, &a, &b, &c, &d);
-    __asm__ __volatile__("cpuid \n\t"
-                         : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
-                         : "0"(0x15), "2"(0)
-                         : "memory");
-    // kdebug("Cpu_cpuid_max_Basic_mop = %#03x, a=%ld, b=%ld, c=%ld, d=%ld", Cpu_cpuid_max_Basic_mop, a, b, c, d);
-
-    return c;
-}
-/**
- * @brief 获取处理器的tsc频率（单位：hz）
- *
- * @return uint64_t
- */
-uint64_t cpu_get_tsc_freq()
-{
-    return Cpu_tsc_freq;
-}
+#else
+void cpu_init(void){}
+#endif

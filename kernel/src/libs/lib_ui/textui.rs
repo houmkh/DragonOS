@@ -748,6 +748,7 @@ impl TextuiWindow {
         if !self.flags.contains(WindowFlag::TEXTUI_CHROMATIC) {
             return Ok(());
         }
+        send_to_default_serial8250_port(&[character as u8]);
 
         //进行换行操作
         if character == '\n' {
@@ -831,10 +832,6 @@ impl TextuiWindow {
                 }
             }
         } else {
-            // 输出其他字符
-
-            send_to_default_serial8250_port(&[character as u8]);
-
             if is_enable_window == true {
                 if let TextuiVline::Chromatic(vline) =
                     &self.vlines[<LineId as Into<usize>>::into(self.vline_operating)]
@@ -1000,6 +997,43 @@ pub fn textui_putchar(
             ENABLE_PUT_TO_WINDOW.load(Ordering::SeqCst),
         );
     }
+}
+
+/// 向默认窗口输出一个字符串
+pub fn textui_putstr(
+    string: &str,
+    fr_color: FontColor,
+    bk_color: FontColor,
+) -> Result<(), SystemError> {
+    let window = if unsafe { TEXTUI_IS_INIT } {
+        let fw = textui_framework();
+        let w = fw.current_window.clone();
+        Some(w)
+    } else {
+        None
+    };
+
+    let mut guard = window.as_ref().map(|w| w.lock());
+
+    for character in string.chars() {
+        if unsafe { TEXTUI_IS_INIT } {
+            guard.as_mut().unwrap().textui_putchar_window(
+                character,
+                fr_color,
+                bk_color,
+                ENABLE_PUT_TO_WINDOW.load(Ordering::SeqCst),
+            )?;
+        } else {
+            no_init_textui_putchar_window(
+                character,
+                fr_color,
+                bk_color,
+                ENABLE_PUT_TO_WINDOW.load(Ordering::SeqCst),
+            )?;
+        }
+    }
+
+    return Ok(());
 }
 
 /// 初始化text ui框架

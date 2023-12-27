@@ -73,6 +73,8 @@ pub enum PageTableKind {
     User,
     /// 内核页表
     Kernel,
+    /// 内存虚拟化中使用的EPT
+    EPT,
 }
 
 /// 物理内存地址
@@ -327,6 +329,33 @@ pub struct PhysMemoryArea {
     pub size: usize,
 }
 
+impl PhysMemoryArea {
+    pub fn new(base: PhysAddr, size: usize) -> Self {
+        Self { base, size }
+    }
+
+    /// 返回向上页面对齐的区域起始物理地址
+    pub fn area_base_aligned(&self) -> PhysAddr {
+        return PhysAddr::new(
+            (self.base.data() + (MMArch::PAGE_SIZE - 1)) & !(MMArch::PAGE_SIZE - 1),
+        );
+    }
+
+    /// 返回向下页面对齐的区域截止物理地址
+    pub fn area_end_aligned(&self) -> PhysAddr {
+        return PhysAddr::new((self.base.data() + self.size) & !(MMArch::PAGE_SIZE - 1));
+    }
+}
+
+impl Default for PhysMemoryArea {
+    fn default() -> Self {
+        Self {
+            base: PhysAddr::new(0),
+            size: 0,
+        }
+    }
+}
+
 pub trait MemoryManagementArch: Clone + Copy + Debug {
     /// 页面大小的shift（假如页面4K，那么这个值就是12,因为2^12=4096）
     const PAGE_SHIFT: usize;
@@ -365,6 +394,8 @@ pub trait MemoryManagementArch: Clone + Copy + Debug {
     const PAGE_SIZE: usize = 1 << Self::PAGE_SHIFT;
     /// 通过这个mask，获取地址的页内偏移量
     const PAGE_OFFSET_MASK: usize = Self::PAGE_SIZE - 1;
+    /// 通过这个mask，获取页的首地址
+    const PAGE_MASK: usize = !(Self::PAGE_OFFSET_MASK);
     /// 页表项的地址、数据部分的shift。
     /// 打个比方，如果这个值为52,那么意味着页表项的[0, 52)位，用于表示地址以及其他的标志位
     const PAGE_ADDRESS_SHIFT: usize = Self::PAGE_LEVELS * Self::PAGE_ENTRY_SHIFT + Self::PAGE_SHIFT;

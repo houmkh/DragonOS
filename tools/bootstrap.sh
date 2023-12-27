@@ -1,3 +1,6 @@
+CURRENT_SHELL=$(basename $SHELL)
+source "$HOME/.$CURRENT_SHELL"rc
+
 emulator="qemu"
 defpackman="apt-get"
 dockerInstall="true"
@@ -18,14 +21,13 @@ congratulations()
 	echo "|                                          |"
 	echo "|   你成功安装了DragonOS所需的依赖项!      |"
     echo "|                                          |"
-    echo "|   请关闭当前终端, 并重新打开一个终端     |"
+    echo "|   请[关闭]当前终端, 并[重新打开]一个终端 |"
 	echo "|   然后通过以下命令运行:                  |"
 	echo "|                                          |"
 	echo "|                make run                  |"
 	echo "|                                          |"
 	echo "|------------------------------------------|"
 }
-
 
 ####################################
 # 当检测到ubuntu或Debian时，执行此函数 #
@@ -44,11 +46,21 @@ install_ubuntu_debian_pkg()
         gnupg \
         lsb-release \
         llvm-dev libclang-dev clang gcc-multilib \
-        gcc build-essential fdisk dosfstools dnsmasq bridge-utils iptables libssl-dev pkg-config
+        gcc build-essential fdisk dosfstools dnsmasq bridge-utils iptables libssl-dev pkg-config \
+		sphinx gcc-riscv64-unknown-elf
+	
+	# 如果python3没有安装
+	if [ -z "$(which python3)" ]; then
+		echo "正在安装python3..."
+		sudo apt install -y python3 python3-pip
+	fi
 
     if [ -z "$(which docker)" ] && [ -n ${dockerInstall} ]; then
         echo "正在安装docker..."
-        sudo apt install docker.io docker-compose
+        sudo apt install -y docker.io docker-compose
+		sudo usermod -aG docker $USER
+		sudo newgrp docker
+		sudo systemctl restart docker
     elif [ -z ${dockerInstall} ]; then
 		echo "您传入--no-docker参数生效, 安装docker步骤被跳过."
 	elif [ -n "$(which docker)" ]; then
@@ -61,6 +73,21 @@ install_ubuntu_debian_pkg()
     else
         echo "QEMU已经在您的电脑上安装！"
     fi
+
+}
+
+install_archlinux_pkg()
+{
+    pkgman="pacman"
+    echo "检测到 ArchLinux"
+    echo "正在更新包管理器的列表..."
+    sudo "${pkgman}" -Sy
+    echo "正在安装所需的包..."
+    sudo "${pkgman}" -S --needed --noconfirm \
+	curl wget bridge-utils dnsmasq \
+        diffutils pkgconf which unzip util-linux dosfstools \
+        gcc make flex texinfo gmp mpfr qemu-base \
+        libmpc libssl-dev
 
 }
 
@@ -115,7 +142,7 @@ rustInstall() {
 		echo "Rust 还未被安装"
 		echo "请再次运行脚本，接受rustup安装"
 		echo "或通过以下方式手动安装rustc（不推荐）："
-		echo "curl -sSf https://static.rust-lang.org/rustup.sh | sh -s -- --channel=nightly"
+		echo "curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain nightly"
 		exit
 	else
         echo "是否为Rust换源为国内镜像源？(Tuna)"
@@ -131,19 +158,62 @@ rustInstall() {
 		fi
         echo "正在安装DragonOS所需的rust组件...首次安装需要一些时间来更新索引，请耐心等待..."
         cargo install cargo-binutils
-        rustup toolchain install nightly
-        rustup default nightly
 		rustup toolchain install nightly-2023-01-21-x86_64-unknown-linux-gnu
 		rustup toolchain install nightly-2023-08-15-x86_64-unknown-linux-gnu
 		rustup component add rust-src --toolchain nightly-2023-01-21-x86_64-unknown-linux-gnu
 		rustup component add rust-src --toolchain nightly-2023-08-15-x86_64-unknown-linux-gnu
-        rustup component add rust-src
+		rustup target add x86_64-unknown-none --toolchain nightly-2023-01-21-x86_64-unknown-linux-gnu
+		rustup target add x86_64-unknown-none --toolchain nightly-2023-08-15-x86_64-unknown-linux-gnu
+
+		rustup toolchain install nightly-2023-01-21-riscv64gc-unknown-linux-gnu --force-non-host
+		rustup toolchain install nightly-2023-08-15-riscv64gc-unknown-linux-gnu --force-non-host
+		rustup target add riscv64gc-unknown-none-elf --toolchain nightly-2023-01-21-riscv64gc-unknown-linux-gnu
+		rustup target add riscv64imac-unknown-none-elf --toolchain nightly-2023-01-21-riscv64gc-unknown-linux-gnu
+		rustup target add riscv64gc-unknown-none-elf --toolchain nightly-2023-08-15-riscv64gc-unknown-linux-gnu
+		rustup target add riscv64imac-unknown-none-elf --toolchain nightly-2023-08-15-riscv64gc-unknown-linux-gnu
+        
 		rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+		rustup component add rust-src
         rustup component add llvm-tools-preview
-		rustup target add x86_64-unknown-none
+		rustup default nightly
 		
 		echo "Rust已经成功的在您的计算机上安装！请运行 source ~/.cargo/env 以使rust在当前窗口生效！"
 	fi
+}
+
+####################################################################################
+# 初始化DragonOS的musl交叉编译工具链
+# 主要是把musl交叉编译工具链的rcrt1.o替换为crt1.o (因为rust的rcrt1.o会使用动态链接的解释器，但是DragonOS目前尚未把它加载进来)
+#
+# 为DragonOS开发应用的时候，请使用 `cargo +nightly-2023-08-15-x86_64-unknown-linux-gnu build --target x86_64-unknown-linux-musl` 来编译
+# 	这样编译出来的应用将能二进制兼容DragonOS 
+####################################################################################
+initialize_userland_musl_toolchain()
+{
+	fork_toolchain_from="nightly-2023-08-15-x86_64-unknown-linux-gnu"
+	custom_toolchain="nightly-2023-08-15-x86_64-unknown-linux_dragonos-gnu"
+	custom_toolchain_dir="$(dirname $(rustc --print sysroot))/${custom_toolchain}"
+	# 如果目录为空
+	if [ ! -d "${custom_toolchain_dir}" ]; then
+		echo "Custom toolchain does not exist, creating..."
+		rustup toolchain install ${fork_toolchain_from}
+		rustup component add --toolchain ${fork_toolchain_from} rust-src
+		rustup target add --toolchain ${fork_toolchain_from} x86_64-unknown-linux-musl
+		cp -r $(dirname $(rustc --print sysroot))/${fork_toolchain_from} ${custom_toolchain_dir}
+		self_contained_dir=${custom_toolchain_dir}/lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained
+		cp -f ${self_contained_dir}/crt1.o ${self_contained_dir}/rcrt1.o
+	else
+		echo "Custom toolchain already exists."
+	fi
+
+}
+
+
+install_python_pkg()
+{
+	echo "正在安装python依赖项..."
+	# 安装文档生成工具
+	sh -c "cd ../docs && pip3 install -r requirements.txt"
 }
 
 
@@ -194,7 +264,7 @@ else
 		solus "$emulator" || exit 1
 	# Arch linux
 	elif hash 2>/dev/null pacman; then
-		archLinux "$emulator" || exit 1
+		install_archlinux_pkg || exit 1
 	# FreeBSD
 	elif hash 2>/dev/null pkg; then
 		freebsd "$emulator" || exit 1
@@ -204,7 +274,13 @@ else
 	fi
 fi
 
-rustInstall     # 安装rust
+# 安装rust
+rustInstall     
+
+
+#  初始化DragonOS的musl交叉编译工具链
+initialize_userland_musl_toolchain
+install_python_pkg
 
 # 安装dadk
 cargo install dadk || exit 1
@@ -212,9 +288,11 @@ cargo install dadk || exit 1
 # 创建磁盘镜像
 bash create_hdd_image.sh
 # 编译安装GCC交叉编译工具链
-bash build_gcc_toolchain.sh
+bash build_gcc_toolchain.sh -cs -kb -kg || (echo "GCC交叉编译工具链安装失败" && exit 1)
+# 编译安装musl交叉编译工具链
+bash install_musl_gcc.sh || (echo "musl交叉编译工具链安装失败" && exit 1)
 # 编译安装grub
-bash grub_auto_install.sh
+bash grub_auto_install.sh || (echo "grub安装失败" && exit 1)
 
 # 解决kvm权限问题
 USR=$USER

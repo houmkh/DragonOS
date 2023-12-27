@@ -3,11 +3,20 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use crate::{
+    arch::syscall::nr::*,
+    libs::{futex::constant::FutexFlag, rand::GRandFlags},
+    process::{
+        fork::KernelCloneArgs,
+        resource::{RLimit64, RUsage},
+    },
+};
+
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{
     arch::{cpu::cpu_reset, interrupt::TrapFrame, MMArch},
-    driver::base::{block::SeekFrom, device::DeviceNumber},
+    driver::base::block::SeekFrom,
     filesystem::vfs::{
         fcntl::FcntlCommand,
         file::FileMode,
@@ -19,21 +28,26 @@ use crate::{
     libs::align::page_align_up,
     mm::{verify_area, MemoryManagementArch, VirtAddr},
     net::syscall::SockAddr,
-    process::{ptrace::PtraceRequest, Pid},
+    process::{fork::CloneFlags, {ptrace::PtraceRequest, Pid}},
     time::{
         syscall::{PosixTimeZone, PosixTimeval},
         TimeSpec,
     },
 };
 
-use self::user_access::{UserBufferReader, UserBufferWriter};
+use self::{
+    misc::SysInfo,
+    user_access::{UserBufferReader, UserBufferWriter},
+};
 
+pub mod misc;
 pub mod user_access;
 
 #[repr(i32)]
 #[derive(Debug, FromPrimitive, ToPrimitive, PartialEq, Eq, Clone)]
 #[allow(dead_code, non_camel_case_types)]
 pub enum SystemError {
+    /// 操作不被允许 Operation not permitted.
     EPERM = 1,
     /// 没有指定的文件或目录 No such file or directory.
     ENOENT = 2,
@@ -297,6 +311,19 @@ pub enum SystemError {
     EOWNERDEAD = 129,
     /// 状态不可恢复 State not recoverable.
     ENOTRECOVERABLE = 130,
+    // VMX on 虚拟化开启指令出错
+    EVMXONFailed = 131,
+    // VMX off 虚拟化关闭指令出错
+    EVMXOFFFailed = 132,
+    // VMX VMWRITE 写入虚拟化VMCS内存出错
+    EVMWRITEFailed = 133,
+    EVMREADFailed = 134,
+    EVMPRTLDFailed = 135,
+    EVMLAUNCHFailed = 136,
+    KVM_HVA_ERR_BAD = 137,
+
+    // === 以下错误码不应该被用户态程序使用 ===
+    ERESTARTSYS = 512,
 }
 
 impl SystemError {
@@ -315,68 +342,12 @@ impl SystemError {
     }
 }
 
-// 定义系统调用号
-pub const SYS_PUT_STRING: usize = 1;
-pub const SYS_OPEN: usize = 2;
-pub const SYS_CLOSE: usize = 3;
-pub const SYS_READ: usize = 4;
-pub const SYS_WRITE: usize = 5;
-pub const SYS_LSEEK: usize = 6;
-pub const SYS_FORK: usize = 7;
-pub const SYS_VFORK: usize = 8;
-pub const SYS_BRK: usize = 9;
-pub const SYS_SBRK: usize = 10;
-
-pub const SYS_REBOOT: usize = 11;
-pub const SYS_CHDIR: usize = 12;
-pub const SYS_GET_DENTS: usize = 13;
-pub const SYS_EXECVE: usize = 14;
-pub const SYS_WAIT4: usize = 15;
-pub const SYS_EXIT: usize = 16;
-pub const SYS_MKDIR: usize = 17;
-pub const SYS_NANOSLEEP: usize = 18;
+// 与linux不一致的调用，在linux基础上累加
+pub const SYS_PUT_STRING: usize = 100000;
+pub const SYS_SBRK: usize = 100001;
 /// todo: 该系统调用与Linux不一致，将来需要删除该系统调用！！！ 删的时候记得改C版本的libc
-pub const SYS_CLOCK: usize = 19;
-pub const SYS_PIPE: usize = 20;
-/// 系统调用21曾经是SYS_MSTAT，但是现在已经废弃
-pub const __NOT_USED: usize = 21;
-pub const SYS_UNLINK_AT: usize = 22;
-pub const SYS_KILL: usize = 23;
-pub const SYS_SIGACTION: usize = 24;
-pub const SYS_RT_SIGRETURN: usize = 25;
-pub const SYS_GETPID: usize = 26;
-pub const SYS_SCHED: usize = 27;
-pub const SYS_DUP: usize = 28;
-pub const SYS_DUP2: usize = 29;
-pub const SYS_SOCKET: usize = 30;
-
-pub const SYS_SETSOCKOPT: usize = 31;
-pub const SYS_GETSOCKOPT: usize = 32;
-pub const SYS_CONNECT: usize = 33;
-pub const SYS_BIND: usize = 34;
-pub const SYS_SENDTO: usize = 35;
-pub const SYS_RECVFROM: usize = 36;
-pub const SYS_RECVMSG: usize = 37;
-pub const SYS_LISTEN: usize = 38;
-pub const SYS_SHUTDOWN: usize = 39;
-pub const SYS_ACCEPT: usize = 40;
-
-pub const SYS_GETSOCKNAME: usize = 41;
-pub const SYS_GETPEERNAME: usize = 42;
-pub const SYS_GETTIMEOFDAY: usize = 43;
-pub const SYS_MMAP: usize = 44;
-pub const SYS_MUNMAP: usize = 45;
-
-pub const SYS_MPROTECT: usize = 46;
-pub const SYS_FSTAT: usize = 47;
-pub const SYS_GETCWD: usize = 48;
-pub const SYS_GETPPID: usize = 49;
-pub const SYS_GETPGID: usize = 50;
-
-pub const SYS_FCNTL: usize = 51;
-pub const SYS_FTRUNCATE: usize = 52;
-pub const SYS_MKNOD: usize = 53;
-pub const SYS_TRACE: usize = 54;
+pub const SYS_CLOCK: usize = 100002;
+pub const SYS_SCHED: usize = 100003;
 
 #[derive(Debug)]
 pub struct Syscall;
@@ -407,6 +378,7 @@ impl Syscall {
     ///
     /// 这个函数内，需要根据系统调用号，调用对应的系统调用处理函数。
     /// 并且，对于用户态传入的指针参数，需要在本函数内进行越界检查，防止访问到内核空间。
+    #[inline(never)]
     pub fn handle(
         syscall_num: usize,
         args: &[usize],
@@ -417,6 +389,7 @@ impl Syscall {
             SYS_PUT_STRING => {
                 Self::put_string(args[0] as *const u8, args[1] as u32, args[2] as u32)
             }
+            #[cfg(target_arch = "x86_64")]
             SYS_OPEN => {
                 let path: &CStr = unsafe { CStr::from_ptr(args[0] as *const c_char) };
                 let path: Result<&str, core::str::Utf8Error> = path.to_str();
@@ -426,10 +399,32 @@ impl Syscall {
                     let path: &str = path.unwrap();
 
                     let flags = args[1];
-                    let open_flags: FileMode = FileMode::from_bits_truncate(flags as u32);
-                    Self::open(path, open_flags)
-                };
+                    let mode = args[2];
 
+                    let open_flags: FileMode = FileMode::from_bits_truncate(flags as u32);
+                    let mode = ModeType::from_bits(mode as u32).ok_or(SystemError::EINVAL)?;
+                    Self::open(path, open_flags, mode, true)
+                };
+                res
+            }
+
+            SYS_OPENAT => {
+                let dirfd = args[0] as i32;
+                let path: &CStr = unsafe { CStr::from_ptr(args[1] as *const c_char) };
+                let flags = args[2];
+                let mode = args[3];
+
+                let path: Result<&str, core::str::Utf8Error> = path.to_str();
+                let res = if path.is_err() {
+                    Err(SystemError::EINVAL)
+                } else {
+                    let path: &str = path.unwrap();
+
+                    let open_flags: FileMode =
+                        FileMode::from_bits(flags as u32).ok_or(SystemError::EINVAL)?;
+                    let mode = ModeType::from_bits(mode as u32).ok_or(SystemError::EINVAL)?;
+                    Self::openat(dirfd, path, open_flags, mode, true)
+                };
                 res
             }
             SYS_CLOSE => {
@@ -479,8 +474,16 @@ impl Syscall {
 
                 Self::lseek(fd, w)
             }
+            SYS_IOCTL => {
+                let fd = args[0];
+                let cmd = args[1];
+                let data = args[2];
+                Self::ioctl(fd, cmd as u32, data)
+            }
 
+            #[cfg(target_arch = "x86_64")]
             SYS_FORK => Self::fork(frame),
+            #[cfg(target_arch = "x86_64")]
             SYS_VFORK => Self::vfork(frame),
 
             SYS_BRK => {
@@ -525,7 +528,8 @@ impl Syscall {
                 Self::chdir(r)
             }
 
-            SYS_GET_DENTS => {
+            #[allow(unreachable_patterns)]
+            SYS_GETDENTS64 | SYS_GETDENTS => {
                 let fd = args[0] as i32;
 
                 let buf_vaddr = args[1];
@@ -572,19 +576,20 @@ impl Syscall {
                 }
             }
             SYS_WAIT4 => {
-                let pid = args[0] as i64;
+                let pid = args[0] as i32;
                 let wstatus = args[1] as *mut i32;
                 let options = args[2] as c_int;
                 let rusage = args[3] as *mut c_void;
                 // 权限校验
                 // todo: 引入rusage之后，更正以下权限校验代码中，rusage的大小
-                Self::wait4(pid, wstatus, options, rusage)
+                Self::wait4(pid.into(), wstatus, options, rusage)
             }
 
             SYS_EXIT => {
                 let exit_code = args[0];
                 Self::exit(exit_code)
             }
+            #[cfg(target_arch = "x86_64")]
             SYS_MKDIR => {
                 let path_ptr = args[0] as *const c_char;
                 let mode = args[1];
@@ -630,7 +635,16 @@ impl Syscall {
             }
 
             SYS_CLOCK => Self::clock(),
+            #[cfg(target_arch = "x86_64")]
             SYS_PIPE => {
+                let pipefd: *mut i32 = args[0] as *mut c_int;
+                if pipefd.is_null() {
+                    Err(SystemError::EFAULT)
+                } else {
+                    Self::pipe2(pipefd, FileMode::empty())
+                }
+            }
+            SYS_PIPE2 => {
                 let pipefd: *mut i32 = args[0] as *mut c_int;
                 let arg1 = args[1];
                 if pipefd.is_null() {
@@ -641,7 +655,7 @@ impl Syscall {
                 }
             }
 
-            SYS_UNLINK_AT => {
+            SYS_UNLINKAT => {
                 let dirfd = args[0] as i32;
                 let pathname = args[1] as *const c_char;
                 let flags = args[2] as u32;
@@ -669,6 +683,12 @@ impl Syscall {
                     }
                 }
             }
+
+            #[cfg(target_arch = "x86_64")]
+            SYS_UNLINK => {
+                let pathname = args[0] as *const u8;
+                Self::unlink(pathname)
+            }
             SYS_KILL => {
                 let pid = Pid::new(args[0]);
                 let sig = args[1] as c_int;
@@ -676,7 +696,7 @@ impl Syscall {
                 Self::kill(pid, sig)
             }
 
-            SYS_SIGACTION => {
+            SYS_RT_SIGACTION => {
                 let sig = args[0] as c_int;
                 let act = args[1];
                 let old_act = args[2];
@@ -696,6 +716,8 @@ impl Syscall {
                 let oldfd: i32 = args[0] as c_int;
                 Self::dup(oldfd)
             }
+
+            #[cfg(target_arch = "x86_64")]
             SYS_DUP2 => {
                 let oldfd: i32 = args[0] as c_int;
                 let newfd: i32 = args[1] as c_int;
@@ -850,6 +872,12 @@ impl Syscall {
             SYS_LISTEN => Self::listen(args[0], args[1]),
             SYS_SHUTDOWN => Self::shutdown(args[0], args[1]),
             SYS_ACCEPT => Self::accept(args[0], args[1] as *mut SockAddr, args[2] as *mut u32),
+            SYS_ACCEPT4 => Self::accept4(
+                args[0],
+                args[1] as *mut SockAddr,
+                args[2] as *mut u32,
+                args[3] as u32,
+            ),
             SYS_GETSOCKNAME => {
                 Self::getsockname(args[0], args[1] as *mut SockAddr, args[2] as *mut u32)
             }
@@ -880,7 +908,7 @@ impl Syscall {
             SYS_MUNMAP => {
                 let addr = args[0];
                 let len = page_align_up(args[1]);
-                if addr & MMArch::PAGE_SIZE != 0 {
+                if addr & (MMArch::PAGE_SIZE - 1) != 0 {
                     // The addr argument is not a multiple of the page size
                     Err(SystemError::EINVAL)
                 } else {
@@ -890,7 +918,7 @@ impl Syscall {
             SYS_MPROTECT => {
                 let addr = args[0];
                 let len = page_align_up(args[1]);
-                if addr & MMArch::PAGE_SIZE != 0 {
+                if addr & (MMArch::PAGE_SIZE - 1) != 0 {
                     // The addr argument is not a multiple of the page size
                     Err(SystemError::EINVAL)
                 } else {
@@ -952,6 +980,7 @@ impl Syscall {
                 res
             }
 
+            #[cfg(target_arch = "x86_64")]
             SYS_MKNOD => {
                 let path = args[0];
                 let flags = args[1];
@@ -960,15 +989,9 @@ impl Syscall {
                 Self::mknod(path as *const i8, flags, DeviceNumber::from(dev_t))
             }
 
-            SYS_TRACE => {
-                let request = args[0];
-                let pid = args[1];
-                let addr = args[2] as u64;
-                let data: u64 = args[3] as u64;
-                Self::sys_ptrace(request, pid, addr, data)
-            }
             _ => panic!("Unsupported syscall ID: {}", syscall_num),
         };
+
         // TODO 判断是否被追踪 如果被追踪 则发送sigtrap给自己 并记录frame
 
         return r;
@@ -983,6 +1006,6 @@ impl Syscall {
     }
 
     pub fn reboot() -> Result<usize, SystemError> {
-        cpu_reset();
+        unsafe { cpu_reset() };
     }
 }

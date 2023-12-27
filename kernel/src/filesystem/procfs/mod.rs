@@ -20,6 +20,7 @@ use crate::{
         once::Once,
         spinlock::{SpinLock, SpinLockGuard},
     },
+    mm::allocator::page_frame::FrameAllocator,
     process::{Pid, ProcessManager},
     syscall::SystemError,
     time::TimeSpec,
@@ -179,23 +180,24 @@ impl ProcFSInode {
         );
         pdata.append(&mut format!("\nvrtime:\t{}", vrtime).as_bytes().to_owned());
 
-        let binding = pcb.basic().user_vm().unwrap();
-        let address_space_guard = binding.read();
-        // todo: 当前进程运行过程中占用内存的峰值
-        let hiwater_vm: u64 = 0;
-        // 进程代码段的大小
-        let text = (address_space_guard.end_code - address_space_guard.start_code) / 1024;
-        // 进程数据段的大小
-        let data = (address_space_guard.end_data - address_space_guard.start_data) / 1024;
-        drop(address_space_guard);
+        if let Some(user_vm) = pcb.basic().user_vm() {
+            let address_space_guard = user_vm.read();
+            // todo: 当前进程运行过程中占用内存的峰值
+            let hiwater_vm: u64 = 0;
+            // 进程代码段的大小
+            let text = (address_space_guard.end_code - address_space_guard.start_code) / 1024;
+            // 进程数据段的大小
+            let data = (address_space_guard.end_data - address_space_guard.start_data) / 1024;
+            drop(address_space_guard);
+            pdata.append(
+                &mut format!("\nVmPeak:\t{} kB", hiwater_vm)
+                    .as_bytes()
+                    .to_owned(),
+            );
+            pdata.append(&mut format!("\nVmData:\t{} kB", data).as_bytes().to_owned());
+            pdata.append(&mut format!("\nVmExe:\t{} kB", text).as_bytes().to_owned());
+        }
 
-        pdata.append(
-            &mut format!("\nVmPeak:\t{} kB", hiwater_vm)
-                .as_bytes()
-                .to_owned(),
-        );
-        pdata.append(&mut format!("\nVmData:\t{} kB", data).as_bytes().to_owned());
-        pdata.append(&mut format!("\nVmExe:\t{} kB", text).as_bytes().to_owned());
         pdata.append(
             &mut format!("\nflags: {:?}\n", pcb.flags().clone())
                 .as_bytes()
@@ -211,7 +213,7 @@ impl ProcFSInode {
     /// 打开 meminfo 文件
     fn open_meminfo(&self, pdata: &mut ProcfsFilePrivateData) -> Result<i64, SystemError> {
         // 获取内存信息
-        let usage = LockedFrameAllocator.get_usage();
+        let usage = unsafe { LockedFrameAllocator.usage() };
 
         // 传入数据
         let data: &mut Vec<u8> = &mut pdata.data;

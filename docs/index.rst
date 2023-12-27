@@ -18,6 +18,7 @@
    :maxdepth: 1
    :caption: 内核层
 
+   kernel/configuration/index
    kernel/boot/index
    kernel/core_api/index
    kernel/locking/index
@@ -35,7 +36,8 @@
 .. toctree::
    :maxdepth: 1
    :caption: 应用层
-
+   
+   userland/appdev/index
    userland/libc/index
 
 .. toctree::

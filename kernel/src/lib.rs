@@ -7,8 +7,10 @@
 #![feature(const_trait_impl)]
 #![feature(const_refs_to_cell)]
 #![feature(core_intrinsics)]
+#![feature(cstr_from_bytes_until_nul)]
 #![feature(c_void_variant)]
 #![feature(drain_filter)]
+#![feature(inline_const)]
 #![feature(is_some_and)]
 #![feature(naked_functions)]
 #![feature(panic_info_message)]
@@ -16,7 +18,11 @@
 #![feature(trait_upcasting)]
 #![feature(slice_ptr_get)]
 #![feature(vec_into_raw_parts)]
+#![feature(new_uninit)]
+#![feature(ptr_to_from_bits)]
+#![feature(concat_idents)]
 #![cfg_attr(target_os = "none", no_std)]
+#![feature(atomic_mut_ptr)]
 
 #[cfg(test)]
 #[macro_use]
@@ -34,6 +40,7 @@ mod arch;
 mod libs;
 #[macro_use]
 mod include;
+mod debug;
 mod driver; // 如果driver依赖了libs，应该在libs后面导出
 mod exception;
 mod filesystem;
@@ -47,27 +54,39 @@ mod smp;
 mod syscall;
 mod time;
 
+#[cfg(target_arch = "x86_64")]
+mod virt;
+
 #[macro_use]
 extern crate alloc;
+#[macro_use]
+extern crate atomic_enum;
 #[macro_use]
 extern crate bitflags;
 extern crate elf;
 #[macro_use]
 extern crate lazy_static;
-extern crate memoffset;
 extern crate num;
 #[macro_use]
 extern crate num_derive;
 extern crate smoltcp;
-extern crate thingbuf;
 #[macro_use]
 extern crate intertrait;
 #[cfg(target_arch = "x86_64")]
 extern crate x86;
 
+extern crate klog_types;
+
 use crate::mm::allocator::kernel_allocator::KernelAllocator;
 
 use crate::process::ProcessManager;
+
+#[cfg(all(feature = "backtrace", target_arch = "x86_64"))]
+extern crate mini_backtrace;
+
+extern "C" {
+    fn lookup_kallsyms(addr: u64, level: i32) -> i32;
+}
 
 // 声明全局的分配器
 #[cfg_attr(not(test), global_allocator)]
@@ -101,6 +120,19 @@ pub fn panic(info: &PanicInfo) -> ! {
         None => {
             println!("No panic message.");
         }
+    }
+
+    #[cfg(all(feature = "backtrace", target_arch = "x86_64"))]
+    {
+        unsafe {
+            let bt = mini_backtrace::Backtrace::<16>::capture();
+            println!("Rust Panic Backtrace:");
+            let mut level = 0;
+            for frame in bt.frames {
+                lookup_kallsyms(frame as u64, level);
+                level += 1;
+            }
+        };
     }
 
     println!("Current PCB:\n\t{:?}", *(ProcessManager::current_pcb()));
