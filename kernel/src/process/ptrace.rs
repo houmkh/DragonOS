@@ -6,8 +6,9 @@ use crate::{
     arch::{interrupt::TrapFrame, ipc::signal::Signal},
     mm::{verify_area, VirtAddr},
     process::ProcessControlBlock,
-    syscall::{Syscall, SystemError},
+    syscall::Syscall,
 };
+use system_error::SystemError;
 
 use super::{Pid, ProcessFlags, ProcessManager};
 #[derive(PartialEq)]
@@ -117,8 +118,9 @@ fn ptrace_traceme() {
         // TODO 要判断父结点是否已经调用exit_ptrace
         if p_pcb.is_some() {
             kdebug!("link parent and child");
-            let pcb = p_pcb.unwrap();
-            if pcb.sched_info().state().is_exited() {
+            let pcb: Arc<ProcessControlBlock> = p_pcb.unwrap();
+            let status = pcb.sched_info().inner_lock_read_irqsave().state();
+            if status.is_exited(){
                 kdebug!("parent is exited");
                 return;
             }
@@ -213,7 +215,7 @@ fn ptrace_unlink(pcb: Arc<ProcessControlBlock>) {
 /// 读取寄存器中的信息并写回用户态
 fn ptrace_readdate(pid: Pid, user_frame: *mut TrapFrame) -> Result<(), SystemError> {
     let pcb = ProcessManager::find(pid).unwrap();
-    let op_frame = pcb.arch_info().get_trapframe();
+    let op_frame = unsafe { pcb.arch_info().get_trapframe() };
     let frame: TrapFrame;
     match op_frame {
         Some(_) => frame = op_frame.unwrap(),

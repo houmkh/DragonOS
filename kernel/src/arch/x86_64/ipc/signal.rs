@@ -752,11 +752,6 @@ fn sig_trap(_sig: Signal) {
         ppid
     );
     Syscall::kill(ppid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
-    kdebug!(
-        "child had lock count = {:?}",
-        ProcessManager::current_pcb().preempt_count()
-    );
-
     sig_stop(Signal::SIGSTOP);
 
     kdebug!("handle sigtrap sucessful");
