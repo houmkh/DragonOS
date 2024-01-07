@@ -5,6 +5,7 @@ use core::{
 
 use crate::{
     arch::{ipc::signal::SigSet, {ipc::signal::Signal, syscall::nr::*}},
+    driver::base::device::device_number::DeviceNumber,
     libs::{futex::constant::FutexFlag, rand::GRandFlags},
     process::{
         fork::KernelCloneArgs,
@@ -694,11 +695,7 @@ impl Syscall {
                 let flags = args[1];
                 let dev_t = args[2];
                 let flags: ModeType = ModeType::from_bits_truncate(flags as u32);
-                Self::mknod(
-                    path as *const i8,
-                    flags,
-                    crate::driver::base::device::DeviceNumber::from(dev_t),
-                )
+                Self::mknod(path as *const i8, flags, DeviceNumber::from(dev_t as u32))
             }
 
             SYS_CLONE => {
@@ -984,6 +981,14 @@ impl Syscall {
                 let data = args[3] as u64;
                 Self::do_strace(request, pid, addr, data)
             }
+
+            SYS_SCHED_GETAFFINITY => {
+                // todo: 这个系统调用还没有实现
+
+                Err(SystemError::ENOSYS)
+            }
+
+            SYS_SCHED_YIELD => Self::sched_yield(),
 
             _ => panic!("Unsupported syscall ID: {}", syscall_num),
         };
