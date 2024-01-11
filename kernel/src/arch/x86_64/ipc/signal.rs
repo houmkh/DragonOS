@@ -143,11 +143,11 @@ impl Signal {
 
     /// 调用信号的默认处理函数
     pub fn handle_default(&self) {
-        kdebug!(
-            "{:?} get {:?}",
-            ProcessManager::current_pcb().pid(),
-            self.clone()
-        );
+        // kdebug!(
+        //     "{:?} get {:?}",
+        //     ProcessManager::current_pcb().pid(),
+        //     self.clone()
+        // );
         match self {
             Signal::INVALID => {
                 kerror!("attempting to handler an Invalid");
@@ -737,7 +737,7 @@ fn sig_continue(sig: Signal) {
 fn sig_ignore(_sig: Signal) {
     if _sig == Signal::SIGCHLD {
         let pid = ProcessManager::current_pcb().pid();
-        kdebug!("{:?} handled sigchld", pid);
+        // kdebug!("{:?} handled sigchld", pid);
         // ProcessManager::wakeup_stop(&ProcessManager::current_pcb());
         // Syscall::kill(Pid(5), Signal::SIGCHLD as i32).expect("fail to notice current parent");
     }
@@ -746,13 +746,13 @@ fn sig_ignore(_sig: Signal) {
 
 fn sig_trap(_sig: Signal) {
     let ppid = ProcessManager::current_pcb().basic().ppid();
-    kdebug!(
-        "{:?} send sigchld to {:?}",
-        ProcessManager::current_pcb().pid(),
-        ppid
-    );
+    // kdebug!(
+    //     "{:?} send sigchld to {:?}",
+    //     ProcessManager::current_pcb().pid(),
+    //     ppid
+    // );
     Syscall::kill(ppid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
     sig_stop(Signal::SIGSTOP);
 
-    kdebug!("handle sigtrap sucessful");
+    // kdebug!("handle sigtrap sucessful");
 }

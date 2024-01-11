@@ -96,7 +96,6 @@ impl Syscall {
             && syscall_num != SYS_PTRACE
         {
             let pid = pcb.pid();
-            kdebug!("syscall = {:?}, send sigtrap to {:?}", syscall_num, pid);
             Syscall::kill(pid, Signal::SIGTRAP as i32).expect("fail to send sigtrap");
         }
         drop(pcb);

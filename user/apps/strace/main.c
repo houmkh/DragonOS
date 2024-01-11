@@ -18,12 +18,20 @@ int main()
     if (child == 0)
     {
         ptrace(PTRACE_TRACEME, 0, NULL, NULL);
-        execl("/bin/ls", "/bin/ls", NULL);
+        // execl("/bin/ls", "/bin/ls", NULL);
+        // execv("about", NULL);
+        printf("child begins\n");
+        for (int i = 0; i < 10; i++)
+        {
+            sleep(1);
+        }
+
         exit(0);
     }
     else
     {
-        wait(&status); // 接收被子进程发送过来的 SIGCHLD 信号
+        wait(&status);           // 接收被子进程发送过来的 SIGCHLD 信号
+        printf("father begins"); // 打印rax寄存器的值
 
         while (1)
         {

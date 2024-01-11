@@ -89,27 +89,27 @@ bitflags! {
 /// 让child成为parent的子进程
 ///
 fn ptrace_link(child: Arc<ProcessControlBlock>, parent: Arc<ProcessControlBlock>) {
-    kdebug!("enter ptrace_link");
+    // kdebug!("enter ptrace_link");
     let ppid: Pid = parent.pid();
     let pid = child.pid();
-    kdebug!("parent = {:?}, child = {:?}", ppid, pid);
+    // kdebug!("parent = {:?}, child = {:?}", ppid, pid);
     child.basic_mut().set_ppid(ppid);
     let mut new_parent = child.cur_parent_pcb.write();
     (*new_parent) = Arc::downgrade(&parent);
-    kdebug!("exit ptrace_link");
+    // kdebug!("exit ptrace_link");
 }
 
 fn ptrace_traceme() {
-    kdebug!("enter ptrace_traceme");
+    // kdebug!("enter ptrace_traceme");
 
     // TODO 错误处理
     // 判断当前进程是否已经在被跟踪
     let cur_pcb = ProcessManager::current_pcb();
     let pid = cur_pcb.pid();
-    kdebug!("i'm {:?}", pid);
+    // kdebug!("i'm {:?}", pid);
     let ptrace = &mut cur_pcb.ptraced.write();
     if !ptrace.contains(PtraceFlag::PT_PTRACED) {
-        kdebug!("i'm not be traced");
+        // kdebug!("i'm not be traced");
         let cur_pcb = ProcessManager::current_pcb();
         let temp_pcb = cur_pcb.clone();
         let parent = &temp_pcb.parent_pcb.read();
@@ -117,7 +117,7 @@ fn ptrace_traceme() {
         drop(parent);
         // TODO 要判断父结点是否已经调用exit_ptrace
         if p_pcb.is_some() {
-            kdebug!("link parent and child");
+            // kdebug!("link parent and child");
             let pcb: Arc<ProcessControlBlock> = p_pcb.unwrap();
             let status = pcb.sched_info().inner_lock_read_irqsave().state();
             if status.is_exited(){
@@ -131,7 +131,7 @@ fn ptrace_traceme() {
             ptrace_link(cur_pcb, pcb);
         }
     }
-    kdebug!("exit ptrace_traceme");
+    // kdebug!("exit ptrace_traceme");
 
     // let guard = unsafe { CurrentIrqArch::save_and_disable_irq() };
     // ProcessManager::mark_sleep(true).unwrap_or_else(|e| {
