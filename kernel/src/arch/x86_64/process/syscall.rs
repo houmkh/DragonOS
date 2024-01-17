@@ -191,7 +191,8 @@ impl Syscall {
         addr: u64,
         data: u64,
     ) -> Result<usize, SystemError> {
-        do_ptrace(PtraceRequest::from(request), proc, addr, data)
+        let request = PtraceRequest::try_from(request)?;
+        do_ptrace(request, proc, addr, data)
     }
 }
 

@@ -4,7 +4,10 @@ use core::{
 };
 
 use crate::{
-    arch::{ipc::signal::SigSet, {ipc::signal::Signal, syscall::nr::*}},
+    arch::{
+        ipc::signal::SigSet,
+        {ipc::signal::Signal, syscall::nr::*},
+    },
     driver::base::device::device_number::DeviceNumber,
     libs::{futex::constant::FutexFlag, rand::GRandFlags},
     process::{

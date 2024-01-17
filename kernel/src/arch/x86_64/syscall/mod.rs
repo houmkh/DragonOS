@@ -67,7 +67,7 @@ macro_rules! syscall_return {
 #[no_mangle]
 pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
     let syscall_flag = frame.rcx as usize;
-        // TODO 重新开一个pr
+    // TODO 重新开一个pr
     // kdebug!("syscall_flag = {:?}", syscall_flag);
     let syscall_num = frame.rax as usize;
     // 防止sys_sched由于超时无法退出导致的死锁
@@ -129,7 +129,6 @@ pub extern "sysv64" fn syscall_handler(frame: &mut TrapFrame) -> () {
         frame,
         show
     );
-
 }
 
 /// 系统调用初始化

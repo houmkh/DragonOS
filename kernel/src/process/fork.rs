@@ -275,8 +275,7 @@ impl ProcessManager {
         }
 
         if clone_flags.contains(CloneFlags::CLONE_SIGHAND) {
-            (*new_pcb.sig_struct_irqsave()).handlers =
-                current_pcb.sig_struct_irqsave().handlers.clone();
+            (*new_pcb.sig_struct()).handlers = current_pcb.sig_struct().handlers.clone();
         }
         return Ok(());
     }

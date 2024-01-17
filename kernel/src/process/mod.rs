@@ -51,7 +51,10 @@ use crate::{
     syscall::{user_access::clear_user, Syscall},
 };
 
-use self::{kthread::WorkerPrivate, ptrace::PtraceFlag};
+use self::{
+    kthread::WorkerPrivate,
+    ptrace::{PtraceFlag, PtracedChildrens},
+};
 
 pub mod abi;
 pub mod c_adapter;
@@ -62,8 +65,8 @@ pub mod idle;
 pub mod kthread;
 pub mod pid;
 pub mod process;
-pub mod resource;
 pub mod ptrace;
+pub mod resource;
 pub mod syscall;
 
 /// 系统中所有进程的pcb
@@ -324,6 +327,7 @@ impl ProcessManager {
         // 关中断
         unsafe { CurrentIrqArch::interrupt_disable() };
         let pcb = ProcessManager::current_pcb();
+        kdebug!("pid {:?} exit, code={}", pcb.pid(), exit_code);
         pcb.sched_info
             .inner_lock_write_irqsave()
             .set_state(ProcessState::Exited(exit_code));
@@ -559,8 +563,8 @@ pub struct ProcessControlBlock {
     parent_pcb: RwLock<Weak<ProcessControlBlock>>,
     /// 真实父进程指针
     real_parent_pcb: RwLock<Weak<ProcessControlBlock>>,
-    
- /// 当前父进程指针
+
+    /// 当前父进程指针
     cur_parent_pcb: RwLock<Weak<ProcessControlBlock>>,
 
     /// 子进程链表
@@ -573,7 +577,9 @@ pub struct ProcessControlBlock {
     thread: RwLock<ThreadInfo>,
 
     /// 跟踪标志位
-    ptraced: RwLock<PtraceFlag> ,
+    ptrace_flag: RwLock<PtraceFlag>,
+    /// 被当前进程跟踪的子进程
+    ptraced_childrens: SpinLock<PtracedChildrens>,
 }
 
 impl ProcessControlBlock {
@@ -644,7 +650,8 @@ impl ProcessControlBlock {
             children: RwLock::new(Vec::new()),
             wait_queue: WaitQueue::INIT,
             thread: RwLock::new(ThreadInfo::new()),
-            ptraced: RwLock::new(PtraceFlag::empty()),
+            ptrace_flag: RwLock::new(PtraceFlag::empty()),
+            ptraced_childrens: SpinLock::new(PtracedChildrens::new()),
         };
 
         // 初始化系统调用栈
@@ -820,8 +827,8 @@ impl ProcessControlBlock {
     unsafe fn adopt_childen(&self) -> Result<(), SystemError> {
         match ProcessManager::find(Pid(1)) {
             Some(init_pcb) => {
-                let childen_guard = self.children.write();
-                let mut init_childen_guard = init_pcb.children.write();
+                let childen_guard = self.children.write_irqsave();
+                let mut init_childen_guard = init_pcb.children.write_irqsave();
 
                 childen_guard.iter().for_each(|pid| {
                     init_childen_guard.push(*pid);
@@ -844,16 +851,12 @@ impl ProcessControlBlock {
     }
 
     pub fn sig_info(&self) -> RwLockReadGuard<ProcessSignalInfo> {
-        self.sig_info.read()
-    }
-
-    pub fn sig_info_irqsave(&self) -> RwLockReadGuard<ProcessSignalInfo> {
         self.sig_info.read_irqsave()
     }
 
     pub fn try_siginfo(&self, times: u8) -> Option<RwLockReadGuard<ProcessSignalInfo>> {
         for _ in 0..times {
-            if let Some(r) = self.sig_info.try_read() {
+            if let Some(r) = self.sig_info.try_read_irqsave() {
                 return Some(r);
             }
         }
@@ -876,7 +879,7 @@ impl ProcessControlBlock {
     }
 
     pub fn sig_struct(&self) -> SpinLockGuard<SignalStruct> {
-        self.sig_struct.lock()
+        self.sig_struct.lock_irqsave()
     }
 
     pub fn try_sig_struct_irq(&self, times: u8) -> Option<SpinLockGuard<SignalStruct>> {
@@ -889,16 +892,12 @@ impl ProcessControlBlock {
         return None;
     }
 
-    pub fn sig_struct_irqsave(&self) -> SpinLockGuard<SignalStruct> {
-        self.sig_struct.lock_irqsave()
+    pub fn ptraced_get_status(&self, flags: PtraceFlag) -> bool {
+        self.ptrace_flag.read().contains(flags)
     }
 
-    pub fn ptraced_get_status(&self,flags:PtraceFlag) -> bool {
-        self.ptraced.read().contains(flags)
-    }
-
-    pub fn ptraced_insert_status(&self,flags:PtraceFlag){
-        self.ptraced.write().insert(flags);
+    pub fn ptraced_insert_status(&self, flags: PtraceFlag) {
+        self.ptrace_flag.write().insert(flags);
     }
 }
 
@@ -909,7 +908,9 @@ impl Drop for ProcessControlBlock {
             .unwrap_or_else(|e| panic!("procfs_unregister_pid failed: error: {e:?}"));
 
         if let Some(ppcb) = self.parent_pcb.read().upgrade() {
-            ppcb.children.write().retain(|pid| *pid != self.pid());
+            ppcb.children
+                .write_irqsave()
+                .retain(|pid| *pid != self.pid());
         }
     }
 }

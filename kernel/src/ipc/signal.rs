@@ -335,7 +335,7 @@ fn recalc_sigpending() {
 pub fn flush_signal_handlers(pcb: Arc<ProcessControlBlock>, force_default: bool) {
     compiler_fence(core::sync::atomic::Ordering::SeqCst);
     // kdebug!("hand=0x{:018x}", hand as *const sighand_struct as usize);
-    let actions = &mut pcb.sig_struct_irqsave().handlers;
+    let actions = &mut pcb.sig_struct().handlers;
 
     for sigaction in actions.iter_mut() {
         if force_default || !sigaction.is_ignore() {
@@ -434,7 +434,7 @@ pub fn set_current_sig_blocked(new_set: &mut SigSet) {
         return;
     }
 
-    let guard = pcb.sig_struct_irqsave();
+    let guard = pcb.sig_struct();
     // todo: 当一个进程有多个线程后，在这里需要设置每个线程的block字段，并且 retarget_shared_pending（虽然我还没搞明白linux这部分是干啥的）
 
     // 设置当前进程的sig blocked

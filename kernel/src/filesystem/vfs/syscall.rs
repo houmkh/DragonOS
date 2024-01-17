@@ -13,9 +13,7 @@ use crate::{
     kerror,
     libs::rwlock::RwLockWriteGuard,
     mm::{verify_area, VirtAddr},
-    process::{
-        Pid, ProcessManager,
-    },
+    process::{Pid, ProcessManager},
     syscall::{
         user_access::{check_and_clone_cstr, UserBufferReader, UserBufferWriter},
         Syscall,

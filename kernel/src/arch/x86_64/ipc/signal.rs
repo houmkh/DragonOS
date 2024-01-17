@@ -734,10 +734,11 @@ fn sig_continue(sig: Signal) {
     });
 }
 /// 信号默认处理函数——忽略
-fn sig_ignore(_sig: Signal) {
-    if _sig == Signal::SIGCHLD {
+fn sig_ignore(sig: Signal) {
+    if sig == Signal::SIGCHLD {
         let pid = ProcessManager::current_pcb().pid();
-        // kdebug!("{:?} handled sigchld", pid);
+        let stack_used = 16384 - (x86::current::registers::rsp() & (16383));
+        kdebug!("{:?} handled sigchld, stack_used:{stack_used}", pid);
         // ProcessManager::wakeup_stop(&ProcessManager::current_pcb());
         // Syscall::kill(Pid(5), Signal::SIGCHLD as i32).expect("fail to notice current parent");
     }
@@ -746,11 +747,11 @@ fn sig_ignore(_sig: Signal) {
 
 fn sig_trap(_sig: Signal) {
     let ppid = ProcessManager::current_pcb().basic().ppid();
-    // kdebug!(
-    //     "{:?} send sigchld to {:?}",
-    //     ProcessManager::current_pcb().pid(),
-    //     ppid
-    // );
+    kdebug!(
+        "{:?} send sigchld to {:?}",
+        ProcessManager::current_pcb().pid(),
+        ppid
+    );
     Syscall::kill(ppid, Signal::SIGCHLD as i32).expect("fail to notice current parent");
     sig_stop(Signal::SIGSTOP);
 

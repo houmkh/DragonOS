@@ -1,9 +1,14 @@
-use alloc::sync::{Arc, Weak};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use num_traits::FromPrimitive;
 use smoltcp::wire::IpProtocol;
 use x86::current::syscall;
 
 use crate::{
-    arch::{interrupt::TrapFrame, ipc::signal::Signal},
+    arch::{interrupt::TrapFrame, ipc::signal::Signal, CurrentIrqArch},
+    exception::InterruptArch,
     mm::{verify_area, VirtAddr},
     process::ProcessControlBlock,
     syscall::Syscall,
@@ -17,49 +22,49 @@ enum PtEventMsg {
     EmsgSysEntry,
 }
 
-#[derive(PartialEq)]
+/// ptrace系统调用的请求类型
+///
+/// 对应linux的 `PTRACE_*`
+///
+/// 参考 https://code.dragonos.org.cn/xref/linux-6.1.9/include/uapi/linux/ptrace.h#11
+#[derive(PartialEq, FromPrimitive)]
 #[repr(usize)]
 #[allow(dead_code)]
 pub enum PtraceRequest {
-    PtraceTraceme,
-    PtraceAttach,
-    PtraceSeize,
-    PtraceInterrupt,
-    PtraceKill,
-    PtraceDetach,
-    PtracePeektext,
-    PtracePeekdata,
-    PtracePoketext,
-    PtracePokedata,
-    PtraceOldsetoptions,
-    PtraceSetoptions,
-    PtraceGeteventmsg,
-    PtracePeeksiginfo,
-    PtraceGetsigmask,
-    PtraceSetsigmask,
-    PtraceListen,
-    PtraceGetfdpic,
-
-    PtraceSinglestep,
-    PtraceSingleblock,
-    PtraceSysemu,
-    PtraceSysemuSinglestep,
-    PtraceSyscall,
-    PtraceCont,
-
-    PtraceGetregset,
-    PtraceSetregset,
-
-    PtraceGetSyscallInfo,
-    PtraceSeccompGetFilter,
-    PtraceSeccompGetMetadata,
-    PtraceGetRseqConfiguration,
+    TraceMe = 0,
+    PeekText = 1,
+    PeekData = 2,
+    PeekUser = 3,
+    PokeText = 4,
+    PokeData = 5,
+    PokeUser = 6,
+    Cont = 7,
+    Kill = 8,
+    SingleStep = 9,
+    Attach = 16,
+    Detach = 17,
+    Syscall = 24,
+    // 其他架构无关的添加操作定义在0x4200-0x4300之间。
+    SetOptions = 0x4200,
+    GetEventMsg = 0x4201,
+    GetSigInfo = 0x4202,
+    SetSigInfo = 0x4203,
+    GetRegSet = 0x4204,
+    SetRegSet = 0x4205,
+    Seize = 0x4206,
+    Interrupt = 0x4207,
+    Listen = 0x4208,
+    PeekSigInfo = 0x4209, // 将PeekSigInfo作为单独的值列出，以便在其他代码中识别和引用。
 }
-impl From<usize> for PtraceRequest {
-    fn from(value: usize) -> Self {
-        unsafe { core::mem::transmute(value) }
+
+impl TryFrom<usize> for PtraceRequest {
+    type Error = SystemError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        <Self as FromPrimitive>::from_usize(value).ok_or(SystemError::EINVAL)
     }
 }
+
 pub enum PtEvent {
     PtraceEventFork,
     PtraceEventVfork,
@@ -70,49 +75,131 @@ pub enum PtEvent {
     PtraceEventSeccomp,
 }
 bitflags! {
-    pub struct PtraceFlag:u32{
-        const NOT_PTRACED  =0x0;
-        const PT_PTRACED=	0x00000001;
+    pub struct PtraceFlag: u32 {
+        const NOT_PTRACED = 0x0;
+        const PT_PTRACED = 0x00000001;
         const PT_DTRACE	= 0x00000002;
-        const PT_TRACESYSGOOD=	0x00000004;
-        const PT_PTRACE_CAP	=0x00000008;
-        const PT_TRACE_FORK=	0x00000010;
-        const PT_TRACE_VFORK=	0x00000020;
-        const PT_TRACE_CLONE	=0x00000040;
-        const PT_TRACE_EXEC	 =  0x00000080;
-        const PT_TRACE_VFORK_DONE=	0x00000100;
-        const PT_TRACE_EXIT=	0x00000200;
+        const PT_TRACESYSGOOD =	0x00000004;
+        const PT_PTRACE_CAP	= 0x00000008;
+        const PT_TRACE_FORK = 0x00000010;
+        const PT_TRACE_VFORK = 0x00000020;
+        const PT_TRACE_CLONE = 0x00000040;
+        const PT_TRACE_EXEC = 0x00000080;
+        const PT_TRACE_VFORK_DONE =	0x00000100;
+        const PT_TRACE_EXIT = 0x00000200;
         const PT_SEIZE = 0x00000400;
-        const PT_TRACE_MASK=	0x000003f4;
+        const PT_TRACE_MASK = 0x000003f4;
   }
 }
+
+/// 被ptrace的子进程
+#[derive(Debug)]
+pub struct PtracedChildrens {
+    data: Vec<Arc<ProcessControlBlock>>,
+}
+
+impl PtracedChildrens {
+    pub fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    /// 添加子进程
+    ///
+    /// ## 参数
+    ///
+    /// - child: 子进程
+    ///
+    /// ## 说明
+    ///
+    /// 如果已经存在，则不添加
+    ///
+    pub fn add(&mut self, child: Arc<ProcessControlBlock>) {
+        // 去重
+        if self.data.iter().find(|x| Arc::ptr_eq(x, &child)).is_none() {
+            kdebug!("PPPPUSH!!!!!");
+            self.data.push(child);
+        }
+    }
+
+    /// 移除子进程
+    ///
+    /// ## 参数
+    ///
+    /// - pid: 子进程的pid
+    ///
+    /// ## 返回值
+    ///
+    /// - Some: 返回被移除的子进程
+    /// - None: 没有找到对应的子进程
+    pub fn remove(&mut self, pid: Pid) -> Option<Arc<ProcessControlBlock>> {
+        let index = self.data.iter().position(|x| x.pid() == pid);
+        if index.is_some() {
+            let remove = self.data.remove(index.unwrap());
+            return Some(remove);
+        }
+        return None;
+    }
+
+    pub fn iter(&self) -> PtracedChildrensIter<'_> {
+        return PtracedChildrensIter {
+            ptraced_childrens: self,
+            index: 0,
+        };
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+}
+
+pub struct PtracedChildrensIter<'a> {
+    ptraced_childrens: &'a PtracedChildrens,
+    index: usize,
+}
+
+impl<'a> Iterator for PtracedChildrensIter<'a> {
+    type Item = &'a Arc<ProcessControlBlock>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.ptraced_childrens.data.len() {
+            let ret = &self.ptraced_childrens.data[self.index];
+            self.index += 1;
+
+            return Some(ret);
+        }
+
+        return None;
+    }
+}
+
 /// 让child成为parent的子进程
 ///
 fn ptrace_link(child: Arc<ProcessControlBlock>, parent: Arc<ProcessControlBlock>) {
     // kdebug!("enter ptrace_link");
     let ppid: Pid = parent.pid();
-    let pid = child.pid();
     // kdebug!("parent = {:?}, child = {:?}", ppid, pid);
     child.basic_mut().set_ppid(ppid);
     let mut new_parent = child.cur_parent_pcb.write();
     (*new_parent) = Arc::downgrade(&parent);
-    // kdebug!("exit ptrace_link");
+    drop(new_parent);
+    parent.ptraced_childrens.lock_irqsave().add(child);
+    kdebug!("exit ptrace_link");
 }
 
 fn ptrace_traceme() {
-    // kdebug!("enter ptrace_traceme");
+    kdebug!("enter ptrace_traceme");
 
     // TODO 错误处理
     // 判断当前进程是否已经在被跟踪
     let cur_pcb = ProcessManager::current_pcb();
     let pid = cur_pcb.pid();
     // kdebug!("i'm {:?}", pid);
-    let ptrace = &mut cur_pcb.ptraced.write();
+    let mut ptrace = cur_pcb.ptrace_flag.write();
     if !ptrace.contains(PtraceFlag::PT_PTRACED) {
         // kdebug!("i'm not be traced");
         let cur_pcb = ProcessManager::current_pcb();
         let temp_pcb = cur_pcb.clone();
-        let parent = &temp_pcb.parent_pcb.read();
+        let parent = temp_pcb.parent_pcb.read();
         let p_pcb = (*parent).clone().upgrade();
         drop(parent);
         // TODO 要判断父结点是否已经调用exit_ptrace
@@ -120,7 +207,7 @@ fn ptrace_traceme() {
             // kdebug!("link parent and child");
             let pcb: Arc<ProcessControlBlock> = p_pcb.unwrap();
             let status = pcb.sched_info().inner_lock_read_irqsave().state();
-            if status.is_exited(){
+            if status.is_exited() {
                 kdebug!("parent is exited");
                 return;
             }
@@ -133,17 +220,16 @@ fn ptrace_traceme() {
     }
     // kdebug!("exit ptrace_traceme");
 
-    // let guard = unsafe { CurrentIrqArch::save_and_disable_irq() };
-    // ProcessManager::mark_sleep(true).unwrap_or_else(|e| {
-    //     kerror!(
-    //         "sleep error :{:?},failed to sleep process :{:?}, with signal :{:?}",
-    //         e,
-    //         ProcessManager::current_pcb(),
-    //         sig
-    //     );
-    // });
-    // drop(guard);
-    // Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGCHLD);
+    let guard = unsafe { CurrentIrqArch::save_and_disable_irq() };
+    ProcessManager::mark_sleep(true).unwrap_or_else(|e| {
+        kerror!(
+            "ptrace traceme sleep error :{:?},failed to sleep process :{:?}",
+            e,
+            ProcessManager::current_pcb(),
+        );
+    });
+    drop(guard);
+    Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGCHLD as i32).ok();
     // kdebug!("send sigchld to myself");
 }
 /// 将指定的进程附加在当前进程上
@@ -161,20 +247,20 @@ fn ptrace_attach(request: PtraceRequest, pid: Pid) -> Result<(), SystemError> {
     let pcb: Arc<ProcessControlBlock> = op_pcb.unwrap();
     // 判断要跟踪的进程是否已退出或已被跟踪
     if pcb.flags().contains(ProcessFlags::EXITING)
-        || pcb.ptraced.read().contains(PtraceFlag::PT_PTRACED)
+        || pcb.ptrace_flag.read().contains(PtraceFlag::PT_PTRACED)
     {
         return Err(SystemError::EPERM);
     }
     let mut seize = false;
     // 判断是否为seize模式
-    if request == PtraceRequest::PtraceSeize {
+    if request == PtraceRequest::Seize {
         seize = true;
     }
     if seize {
-        let mut flag = pcb.ptraced.write();
+        let mut flag = pcb.ptrace_flag.write();
         (*flag).insert(PtraceFlag::PT_PTRACED | PtraceFlag::PT_SEIZE);
     } else {
-        let mut flag = pcb.ptraced.write();
+        let mut flag = pcb.ptrace_flag.write();
         (*flag).insert(PtraceFlag::PT_PTRACED);
     }
     // TODO 处理seize的情况,即不会停下调试的情况
@@ -202,14 +288,19 @@ fn ptrace_detach(pid: Pid) -> Result<(), SystemError> {
 }
 
 fn ptrace_unlink(pcb: Arc<ProcessControlBlock>) {
-    // 将当前的父进程改成真正的父进程
     let real_parent = pcb.parent_pcb.read().clone();
     let mut cur_parent = pcb.cur_parent_pcb.write();
+    // 从父进程的ptrace数组里面删除当前pcb
+    cur_parent
+        .upgrade()
+        .map(|p| p.ptraced_childrens.lock_irqsave().remove(pcb.pid()));
+
+    // 将当前的父进程改成真正的父进程
     *cur_parent = real_parent;
     let real_ppid = pcb.basic().pgid();
     pcb.basic_mut().set_ppid(real_ppid);
-    // n清理标志位
-    let mut ptraced = pcb.ptraced.write();
+    // 清理标志位
+    let mut ptraced = pcb.ptrace_flag.write();
     ptraced.bits = 0;
 }
 /// 读取寄存器中的信息并写回用户态
@@ -292,21 +383,21 @@ pub fn do_ptrace(
         return Err(SystemError::EPERM);
     }
     match request {
-        PtraceRequest::PtraceTraceme => {
+        PtraceRequest::TraceMe => {
             ptrace_traceme();
             return Ok(0);
         }
-        PtraceRequest::PtraceSeize => todo!(),
-        PtraceRequest::PtraceInterrupt => todo!(),
-        PtraceRequest::PtraceKill => todo!(),
-        PtraceRequest::PtraceDetach => {
+        PtraceRequest::Seize => todo!(),
+        PtraceRequest::Interrupt => todo!(),
+        PtraceRequest::Kill => todo!(),
+        PtraceRequest::Detach => {
             // TODO ptrace_detach
             if let Err(e) = ptrace_detach(pid) {
                 return Err(e);
             }
             return Ok(0);
         }
-        PtraceRequest::PtraceAttach => {
+        PtraceRequest::Attach => {
             if let Err(e) = ptrace_attach(request, pid) {
                 return Err(e);
             }
@@ -331,32 +422,32 @@ fn ptrace_request(
     data: u64,
 ) -> Result<(), SystemError> {
     match request {
-        PtraceRequest::PtracePeekdata | PtraceRequest::PtracePeektext => {
+        PtraceRequest::PeekData | PtraceRequest::PeekText => {
             // TODO generic_ptrace_peekdata
             Ok(())
         }
-        PtraceRequest::PtracePokedata | PtraceRequest::PtracePoketext => {
+        PtraceRequest::PokeData | PtraceRequest::PokeText => {
             // TODO generic_ptrace_pokedata
             Ok(())
         }
-        PtraceRequest::PtraceInterrupt => todo!(),
-        PtraceRequest::PtraceOldsetoptions => todo!(),
-        PtraceRequest::PtraceSetoptions => todo!(),
-        PtraceRequest::PtraceGeteventmsg => todo!(),
-        PtraceRequest::PtracePeeksiginfo => todo!(),
-        PtraceRequest::PtraceGetsigmask => todo!(),
-        PtraceRequest::PtraceSetsigmask => todo!(),
-        PtraceRequest::PtraceListen => todo!(),
-        PtraceRequest::PtraceGetfdpic => todo!(),
+        PtraceRequest::Interrupt => todo!(),
+        // PtraceRequest::PtraceOldsetoptions => todo!(),
+        PtraceRequest::SetOptions => todo!(),
+        PtraceRequest::GetEventMsg => todo!(),
+        PtraceRequest::PeekSigInfo => todo!(),
+        PtraceRequest::GetSigInfo => todo!(),
+        PtraceRequest::SetSigInfo => todo!(),
+        PtraceRequest::Listen => todo!(),
+        // PtraceRequest::PtraceGetfdpic => todo!(),
 
-        PtraceRequest::PtraceSyscall
-        | PtraceRequest::PtraceSinglestep
-        | PtraceRequest::PtraceSingleblock
-        | PtraceRequest::PtraceSysemu
-        | PtraceRequest::PtraceSysemuSinglestep
-        | PtraceRequest::PtraceCont => ptrace_resume(request, pid),
+        PtraceRequest::Syscall
+        | PtraceRequest::SingleStep
+        // | PtraceRequest::PtraceSingleblock
+        // | PtraceRequest::PtraceSysemu
+        // | PtraceRequest::PtraceSysemuSinglestep
+        | PtraceRequest::Cont => ptrace_resume(request, pid),
 
-        PtraceRequest::PtraceGetregset => {
+        PtraceRequest::GetRegSet => {
             let user_data = data as *mut TrapFrame;
             let vaddr = VirtAddr::new(user_data as usize);
             match verify_area(vaddr, core::mem::size_of::<TrapFrame>()) {
@@ -365,11 +456,11 @@ fn ptrace_request(
                 Err(_) => todo!(),
             }
         }
-        PtraceRequest::PtraceSetregset => todo!(),
-        PtraceRequest::PtraceGetSyscallInfo => todo!(),
-        PtraceRequest::PtraceSeccompGetFilter => todo!(),
-        PtraceRequest::PtraceSeccompGetMetadata => todo!(),
-        PtraceRequest::PtraceGetRseqConfiguration => todo!(),
+        PtraceRequest::SetRegSet => todo!(),
+        PtraceRequest::GetSigInfo => todo!(),
+        // PtraceRequest::PtraceSeccompGetFilter => todo!(),
+        // PtraceRequest::PtraceSeccompGetMetadata => todo!(),
+        // PtraceRequest::PtraceGetRseqConfiguration => todo!(),
         _ => Ok(()),
     }
 }

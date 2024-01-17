@@ -23,6 +23,7 @@ int main()
         printf("child begins\n");
         for (int i = 0; i < 10; i++)
         {
+            printf("child %d\n", i);
             sleep(1);
         }
 
@@ -30,8 +31,17 @@ int main()
     }
     else
     {
-        wait(&status);           // 接收被子进程发送过来的 SIGCHLD 信号
-        printf("father begins"); // 打印rax寄存器的值
+
+        while (1)
+        {
+            int r = wait(&status); // 接收被子进程发送过来的 SIGCHLD 信号
+            printf("r = %d\n", r);
+            if (r != -1)
+            {
+                break;
+            }
+        }
+        printf("father begins\n"); // 打印rax寄存器的值
 
         while (1)
         {
