@@ -42,8 +42,8 @@ int main()
             }
         }
         printf("father begins\n"); // 打印rax寄存器的值
-
-        while (1)
+        int i = 0;
+        while (i++ < 10)
         {
             // 1. 发送 PTRACE_SYSCALL 命令给被跟踪进程 (调用系统调用前，可以获取系统调用的参数)
             ptrace(PTRACE_SYSCALL, child, NULL, NULL);
@@ -53,12 +53,12 @@ int main()
             { // 如果子进程退出了, 那么终止跟踪
                 break;
             }
-
-            ptrace(PTRACE_GETREGS, child, 0, &regs); // 获取被跟踪进程寄存器的值
+            printf("%d\n", PTRACE_GETREGS);
+            ptrace(0x4204, child, 0, &regs); // 获取被跟踪进程寄存器的值
 
             orig_rax = regs.orig_rax; // 获取rax寄存器的值
 
-            printf("syscall: %s()\n", orig_rax); // 打印rax寄存器的值
+            printf("syscall: %s\n", orig_rax); // 打印rax寄存器的值
 
             // 2. 发送 PTRACE_SYSCALL 命令给被跟踪进程 (调用系统调用后，可以获取系统调用的返回值)
             ptrace(PTRACE_SYSCALL, child, NULL, NULL);

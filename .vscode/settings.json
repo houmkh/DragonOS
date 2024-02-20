@@ -181,6 +181,7 @@
         "./kernel/Cargo.toml",
         "./tools/Cargo.toml",
         "./kernel/Cargo.toml",
+        "./kernel/Cargo.toml",
         "./kernel/Cargo.toml"
     ],
     // "rust-analyzer.cargo.target": "riscv64imac-unknown-none-elf",
@@ -189,4 +190,5 @@
         "make",
         "check",
     ],
+    "rust-analyzer.showUnlinkedFileNotification": false,
 }

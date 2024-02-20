@@ -5,14 +5,14 @@ use core::{
 
 use crate::{
     arch::{
-        ipc::signal::SigSet,
-        {ipc::signal::Signal, syscall::nr::*},
+        ipc::signal::{SigSet, Signal},
+        syscall::nr::*,
     },
     driver::base::device::device_number::DeviceNumber,
     libs::{futex::constant::FutexFlag, rand::GRandFlags},
     process::{
         fork::KernelCloneArgs,
-        ptrace::PtraceFlag,
+        ptrace::{ptrace_stop, PtraceFlag},
         resource::{RLimit64, RUsage},
         ProcessManager,
     },
@@ -98,8 +98,9 @@ impl Syscall {
             && !(syscall_num == SYS_KILL && args[1] == Signal::SIGTRAP.into())
             && syscall_num != SYS_PTRACE
         {
-            let pid = pcb.pid();
-            Syscall::kill(pid, Signal::SIGTRAP as i32).expect("fail to send sigtrap");
+            // let pid = pcb.pid();
+            // Syscall::kill(pid, Signal::SIGTRAP as i32).expect("fail to send sigtrap");
+            ptrace_stop(frame);
         }
         drop(pcb);
         let r = match syscall_num {

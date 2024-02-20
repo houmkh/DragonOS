@@ -198,14 +198,13 @@ fn do_wait(kwo: &mut KernelWaitOption) -> Result<usize, SystemError> {
 
         no_task!();
     }
-    if ProcessManager::current_pcb().pid.data() == 5 {
-        kdebug!("wait ptrace end: {retval:?}");
-    }
+    // if ProcessManager::current_pcb().pid.data() == 5 {
+    //     kdebug!("wait ptrace end: {retval:?}");
+    // }
     ProcessManager::current_pcb()
         .sched_info()
         .inner_lock_write_irqsave()
         .set_state(ProcessState::Runnable);
-    kdebug!("12323234234234234");
     return retval;
 }
 

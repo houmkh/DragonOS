@@ -236,6 +236,36 @@ impl ArchPCBInfo {
     pub fn gsbase(&self) -> usize {
         self.gsbase
     }
+    pub fn rbx(&self) -> usize {
+        self.rbx
+    }
+
+    pub fn r12(&self) -> usize {
+        self.r12
+    }
+
+    pub fn r13(&self) -> usize {
+        self.r13
+    }
+
+    pub fn r14(&self) -> usize {
+        self.r14
+    }
+
+    pub fn r15(&self) -> usize {
+        self.r15
+    }
+
+    pub fn rbp(&self) -> usize {
+        self.rbp
+    }
+
+    pub fn rsp(&self) -> usize {
+        self.rsp
+    }
+    pub fn rip(&self) -> usize {
+        self.rip
+    }
 
     pub fn cr2_mut(&mut self) -> &mut usize {
         &mut self.cr2

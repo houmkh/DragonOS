@@ -27,7 +27,7 @@ enum PtEventMsg {
 /// 对应linux的 `PTRACE_*`
 ///
 /// 参考 https://code.dragonos.org.cn/xref/linux-6.1.9/include/uapi/linux/ptrace.h#11
-#[derive(PartialEq, FromPrimitive)]
+#[derive(PartialEq, FromPrimitive, Debug)]
 #[repr(usize)]
 #[allow(dead_code)]
 pub enum PtraceRequest {
@@ -175,15 +175,12 @@ impl<'a> Iterator for PtracedChildrensIter<'a> {
 /// 让child成为parent的子进程
 ///
 fn ptrace_link(child: Arc<ProcessControlBlock>, parent: Arc<ProcessControlBlock>) {
-    // kdebug!("enter ptrace_link");
     let ppid: Pid = parent.pid();
-    // kdebug!("parent = {:?}, child = {:?}", ppid, pid);
     child.basic_mut().set_ppid(ppid);
     let mut new_parent = child.cur_parent_pcb.write();
     (*new_parent) = Arc::downgrade(&parent);
     drop(new_parent);
     parent.ptraced_childrens.lock_irqsave().add(child);
-    kdebug!("exit ptrace_link");
 }
 
 fn ptrace_traceme() {
@@ -305,9 +302,14 @@ fn ptrace_unlink(pcb: Arc<ProcessControlBlock>) {
 }
 /// 读取寄存器中的信息并写回用户态
 fn ptrace_readdate(pid: Pid, user_frame: *mut TrapFrame) -> Result<(), SystemError> {
+    kdebug!("ptrace_readdate,user_frame  = {user_frame:?}");
     let pcb = ProcessManager::find(pid).unwrap();
-    let op_frame = unsafe { pcb.arch_info().get_trapframe() };
+    let arch: crate::arch::process::ArchPCBInfo = unsafe { pcb.arch_info().clone_all() };
+
+    let trap_frame = arch.get_trapframe();
+    let op_frame = trap_frame;
     let frame: TrapFrame;
+    kdebug!("op_frame = {op_frame:?}");
     match op_frame {
         Some(_) => frame = op_frame.unwrap(),
         None => return Err(SystemError::EINVAL),
@@ -382,6 +384,9 @@ pub fn do_ptrace(
     if pid == Pid(1) {
         return Err(SystemError::EPERM);
     }
+
+    kdebug!("request = {:?}", request);
+
     match request {
         PtraceRequest::TraceMe => {
             ptrace_traceme();
@@ -477,11 +482,12 @@ fn ptrace_resume(_request: PtraceRequest, pid: Pid) -> Result<(), SystemError> {
         None => Err(SystemError::ESRCH),
     }
 }
-/// 给自身发送sigtap信号，并记录trapframe
+/// 给自身发送sigtrap信号，并记录trapframe
 pub fn ptrace_stop(frame: &TrapFrame) {
-    Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGTRAP as i32);
+    Syscall::kill(ProcessManager::current_pcb().pid(), Signal::SIGTRAP as i32).unwrap();
     // TODO arch info记录frame信息
     let pcb = ProcessManager::current_pcb();
     let arch_info = &mut pcb.arch_info.lock();
+    kdebug!("store_trapframe");
     arch_info.store_trapframe(frame)
 }

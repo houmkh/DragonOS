@@ -739,10 +739,10 @@ fn sig_ignore(sig: Signal) {
         let pid = ProcessManager::current_pcb().pid();
         let stack_used = 16384 - (x86::current::registers::rsp() & (16383));
         kdebug!("{:?} handled sigchld, stack_used:{stack_used}", pid);
+
         // ProcessManager::wakeup_stop(&ProcessManager::current_pcb());
-        // Syscall::kill(Pid(5), Signal::SIGCHLD as i32).expect("fail to notice current parent");
     }
-    return;
+    
 }
 
 fn sig_trap(_sig: Signal) {

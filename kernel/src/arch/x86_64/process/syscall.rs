@@ -12,7 +12,7 @@ use crate::{
     mm::ucontext::AddressSpace,
     process::{
         exec::{load_binary_file, ExecParam, ExecParamFlags},
-        ptrace::{do_ptrace, PtraceFlag, PtraceRequest},
+        ptrace::{do_ptrace, ptrace_stop, PtraceFlag, PtraceRequest},
         ProcessControlBlock, ProcessManager,
     },
     syscall::{user_access::UserBufferWriter, Syscall},
